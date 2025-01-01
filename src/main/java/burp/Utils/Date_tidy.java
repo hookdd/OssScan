@@ -20,6 +20,8 @@ public class Date_tidy {
     public static final String Cloud_AWS = "Cloud_AWS";
     public static final String Cloud_CTYUN = "Cloud_CTYUN";
 
+    public static final String Cloud_JDCloud = "Cloud_JDCloud";
+
     // 提取 OSSURL 地址
     public static String extractUrl(byte[] request) {
         try {
@@ -38,7 +40,7 @@ public class Date_tidy {
             return "Error extracting Host";
         }
     }
-    public static String extractRequestUrl(IHttpRequestResponse messageInfo) {
+    public static String extractRequestUrl(IHttpRequestResponse messageInfo, boolean includePath) {
         if (messageInfo == null) {
             return null;
         }
@@ -67,8 +69,12 @@ public class Date_tidy {
         String protocol = useHttps ? "https" : "http";
 
         // 组合URL
-        String url = protocol + "://" + hostHeader + path;
-
+//        String url = protocol + "://" + hostHeader + path;
+        // 组合URL
+        String url = protocol + "://" + hostHeader;
+        if (includePath) {
+            url += path;
+        }
         return url;
     }
 
@@ -81,6 +87,7 @@ public class Date_tidy {
         String aliYunOssRegex = "([a-zA-Z0-9-]+\\.[a-zA-Z0-9-.]+\\.aliyuncs\\.com)";
         String awsS3Regex4 ="(?:https?://)?([a-zA-Z0-9.-]+\\.(?:s3(?:-website)?\\.?[a-zA-Z0-9.-]*\\.amazonaws\\.com))";
         String ctyunRegex = "([a-zA-Z0-9-]+\\.[a-zA-Z0-9-]+\\.zos\\.ctyun\\.cn)";
+        String jdCloudRegex = "https?://([a-zA-Z0-9-]+\\.[a-zA-Z0-9-]+\\.jcloud\\.com)";
 
         // 编译正则表达式
         Pattern huaweiObsPattern = Pattern.compile(huaweiObsRegex, Pattern.CASE_INSENSITIVE);
@@ -88,6 +95,7 @@ public class Date_tidy {
         Pattern aliYunOssPattern = Pattern.compile(aliYunOssRegex, Pattern.CASE_INSENSITIVE);
         Pattern awsS3Pattern4 = Pattern.compile(awsS3Regex4, Pattern.CASE_INSENSITIVE);
         Pattern ctyunPattern = Pattern.compile(ctyunRegex, Pattern.CASE_INSENSITIVE);
+        Pattern jdCloudPattern = Pattern.compile(jdCloudRegex, Pattern.CASE_INSENSITIVE);
 
         // 匹配并提取华为云 OBS
         Matcher huaweiObsMatcher = huaweiObsPattern.matcher(text);
@@ -128,6 +136,13 @@ public class Date_tidy {
             ArrayList<String> ctyunHosts = new ArrayList<>();
             ctyunHosts.add(ctyunMatcher.group(1));
             CouldHashMap.put(Cloud_CTYUN, ctyunHosts);
+        }
+        // 匹配并提取京东云
+        Matcher jdCloudMatcher = jdCloudPattern.matcher(text);
+        while (ctyunMatcher.find()) {
+            ArrayList<String> jdCloudHosts = new ArrayList<>();
+            jdCloudHosts.add(jdCloudMatcher.group(1));
+            CouldHashMap.put(Cloud_JDCloud, jdCloudHosts);
         }
         return CouldHashMap;
     }

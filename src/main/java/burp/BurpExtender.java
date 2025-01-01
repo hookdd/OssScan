@@ -98,7 +98,8 @@ public class BurpExtender extends AbstractTableModel implements IBurpExtender, I
             public void processProxyMessage(boolean messageIsRequest, IInterceptedProxyMessage message) {
                 // 获取请求信息
                 IHttpRequestResponse messageInfo = message.getMessageInfo();
-                String source_url = extractRequestUrl(messageInfo);
+                boolean includePath=true;
+                String source_url = extractRequestUrl(messageInfo,includePath);
                 //messageIsRequest为ture时候为请求信息，为false时候为响应信息
                 if (messageIsRequest) {
                     byte[] request = messageInfo.getRequest();
@@ -119,7 +120,7 @@ public class BurpExtender extends AbstractTableModel implements IBurpExtender, I
                 }
                 //使用 lastRequestHost 来代替 requesthost
                 if (!CouldHashMap.isEmpty()){
-                    Poc_Scan.RequestResponseWrapper responseWrapper = Poc_Scan.buildHttpServiceFromUrl(callbacks, helpers, CouldHashMap);
+                    Poc_Scan.RequestResponseWrapper responseWrapper = Poc_Scan.buildHttpServiceFromUrl(callbacks, helpers, CouldHashMap,messageInfo);
                     IHttpRequestResponse requestResponse = responseWrapper.getRequestResponse();
                     String message1 = responseWrapper.getMessage();
                     String hosts = responseWrapper.getHosts();
