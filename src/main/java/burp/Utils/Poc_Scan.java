@@ -12,215 +12,103 @@ import java.util.*;
 import static burp.Utils.Date_tidy.extractRequestUrl;
 
 public class Poc_Scan {
-    //后续可以对针对不同的云存储写入不同的poc
-    //例如
-//    private static final String[] alibab_poc = {
-//            "GET / HTTP/1.1",
-//            "GET /?acl HTTP/1.1",
-//            "PUT /123.txt HTTP/1.1",
-//            "GET /?policy HTTP/1.1",
-//            "GET /?policyStatus  HTTP/1.1",
-//    };
-//    private static final String[] tencent_poc = {
-//            "GET / HTTP/1.1",
-//            "GET /?acl HTTP/1.1",
-//            "PUT /123.txt HTTP/1.1",
-//            "GET /?policy HTTP/1.1",
-//    };
-//    private static final String[] awsS3_poc = {
-//            "GET / HTTP/1.1",
-//            "GET /?acl HTTP/1.1",
-//            "PUT /123.txt HTTP/1.1",
-//            "GET /?policy HTTP/1.1",
-//
-//    };
-//    private static final String[] huawei_poc = {
-//            "GET / HTTP/1.1",
-//            "GET /?acl HTTP/1.1",
-//            "PUT /123.txt HTTP/1.1",
-//            "GET /?policy HTTP/1.1",
-//    };
-//    private static final String[] ctyun_poc = {
-//            "GET / HTTP/1.1",
-//            "GET /?acl HTTP/1.1",
-//            "GET /?policy HTTP/1.1",
-//            "PUT /123.txt HTTP/1.1"
-//    };
-    private static final String[] poc_HTTP = {
-            "GET / HTTP/1.1",
-            "GET /?acl HTTP/1.1",
-            "GET /?policy HTTP/1.1",
-            "PUT /123.html HTTP/1.1"
-    };
     //去重
     private static Set<String> scannedHosts = Collections.synchronizedSet(new HashSet<>());
-    public  static  RequestResponseWrapper buildHttpServiceFromUrl(IBurpExtenderCallbacks callbacks, IExtensionHelpers helpers, HashMap<String, ArrayList> CouldHashMap, IHttpRequestResponse messageInfo) {
-        StringBuilder allMessages = new StringBuilder();
-        IHttpRequestResponse finalResponse = null;  // 初始化最终响应
-        String hosts=null;
-        boolean includePath=true;
-        String Referer = extractRequestUrl(messageInfo,includePath);
+    public  static  List<RequestResponseWrapper> buildHttpServiceFromUrl(IBurpExtenderCallbacks callbacks, IExtensionHelpers helpers, HashMap<String, ArrayList> CouldHashMap, IHttpRequestResponse messageInfo,String modifiedUrl) {
+
+        String[] poc_HTTP = {
+                "GET / HTTP/1.1",
+                "GET /?acl HTTP/1.1",
+                "GET /?policy HTTP/1.1",
+                "PUT /123.html HTTP/1.1",
+                "GET "+modifiedUrl+" HTTP/1.1"
+        };
+        List<RequestResponseWrapper> results = new ArrayList<>();
+
+        boolean includePath = true;
+        String Referer = extractRequestUrl(messageInfo, includePath);
 
         //获取Map中所有的key
-        for (String keys:CouldHashMap.keySet()) {
+        for (String keys : CouldHashMap.keySet()) {
             List list = CouldHashMap.get(keys);
             for (Object host : list) {
                 if (!scannedHosts.contains(host)) { // 检查是否已经扫描过该主机名
                     scannedHosts.add((String) host); // 将主机名添加到已经扫描过的集合中
-                    if (keys != "Cloud_HuaWei" && keys != "Cloud_TengXun") {
-                        for (int i = 0; i < poc_HTTP.length; i++) {
-                            String requestString = poc_HTTP[i] + "\r\nHost: " + host + "\r\nSec-Ch-Ua-Platform: \"Windows\""
-                                    + "\r\nUser-Agent: Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/130.0.6723.70 Safari/537.36\r\n"
-                                    + "\r\nConnection: keep-alive\r\n"
-                                    + "\r\nReferer: "+ Referer +"\r\n";
-                            // 添加请求体（如果有）
-                            String requestBody = i == 3 ? "<div style=\"display:none;\">Hidden Element</div><script>console.log('XSS Test');</script>" : ""; // PUT 请求需要请求体
-                            byte[] requestBytes = requestString.getBytes(StandardCharsets.UTF_8);
-                            IRequestInfo analyzedRequest = helpers.analyzeRequest(requestBytes);
-                            List<String> headers = analyzedRequest.getHeaders();
-                            byte[] request = helpers.buildHttpMessage(headers, requestBody.getBytes(StandardCharsets.UTF_8));
-                            // 构建HTTP服务
-                            IHttpService httpService = helpers.buildHttpService((String) host, 443, true);
-                            // 发送请求并获取响应
-                            IHttpRequestResponse response = callbacks.makeHttpRequest(httpService, request);
-                            int statusCode = getStatusCode(callbacks, response.getResponse());
-                            byte[] response1 = response.getResponse();
-                            try {
-                                String responseString = new String(response1, "UTF-8");
-                                if (statusCode == 200 && poc_HTTP[i].equals("GET / HTTP/1.1") && responseString.contains("</ListBucketResult>")) {
-                                    allMessages.append("Bucket遍历");
-                                    finalResponse = response;
-                                    hosts = (String) host;
-                                    return new RequestResponseWrapper(finalResponse, allMessages.toString(), hosts);
-                                } else if (statusCode == 404 && poc_HTTP[i].equals("GET / HTTP/1.1") && responseString.contains("The specified bucket does not exist")) {
-                                    allMessages.append("Bucket桶可接管");
-                                    finalResponse = response;
-                                    hosts = (String) host;
-                                    return new RequestResponseWrapper(finalResponse, allMessages.toString(), hosts);
-                                } else if (statusCode == 200 && poc_HTTP[i].equals("GET /?acl HTTP/1.1") && responseString.contains("<AccessControlPolicy>")) {
-                                    allMessages.append("Bucket ACL可读");
-                                    finalResponse = response;
-                                    hosts = (String) host;
-                                    return new RequestResponseWrapper(finalResponse, allMessages.toString(), hosts);
-                                } else if (statusCode == 200 && poc_HTTP[i].equals("GET /?policy HTTP/1.1") && responseString.contains("\"Effect\": \"allow\"")) {
-                                    allMessages.append("Bucket 权限策略为允许");
-                                    finalResponse = response;
-                                    hosts = (String) host;
-                                    return new RequestResponseWrapper(finalResponse, allMessages.toString(), hosts);
-                                } else if (statusCode == 200 && poc_HTTP[i].equals("PUT /123.html HTTP/1.1")) {
-                                    allMessages.append("Bucket文件上传");
-                                    finalResponse = response;
-                                    hosts = (String) host;
-                                    return new RequestResponseWrapper(finalResponse, allMessages.toString(), hosts);
-                                }
+                    for (int i = 0; i < poc_HTTP.length; i++) {
+                        String requestString = poc_HTTP[i] + "\r\nHost: " + host + "\r\nSec-Ch-Ua-Platform: \"Windows\""
+                                + "\r\nUser-Agent: Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/130.0.6723.70 Safari/537.36\r\n"
+                                + "\r\nConnection: keep-alive\r\n"
+                                + "\r\nReferer: " + Referer + "\r\n";
+                        // 添加请求体（如果有）
+                        String requestBody = (i == 3 && !"Cloud_HuaWei".equals(keys)) ? "<div style=\"display:none;\">Hidden Element</div><script>console.log('XSS Test');</script>" : ""; // PUT 请求需要请求体
 
-                            } catch (UnsupportedEncodingException e) {
-                                throw new RuntimeException(e);
+                        byte[] requestBytes = requestString.getBytes(StandardCharsets.UTF_8);
+                        IRequestInfo analyzedRequest = helpers.analyzeRequest(requestBytes);
+                        List<String> headers = analyzedRequest.getHeaders();
+                        byte[] request = helpers.buildHttpMessage(headers, requestBody.getBytes(StandardCharsets.UTF_8));
+                        // 构建HTTP服务
+                        IHttpService httpService = helpers.buildHttpService((String) host, 443, true);
+                        // 发送请求并获取响应
+                        IHttpRequestResponse response = callbacks.makeHttpRequest(httpService, request);
+                        byte[] responseBytes = response.getResponse();
+                        // 响应头判断是否解析漏洞
+                        Boolean IsResponseheaders = false;
+                        IResponseInfo analyzeResponse = helpers.analyzeResponse(responseBytes);
+                        List<String> Responseheaders = analyzeResponse.getHeaders();
+                        //"GET "+modifiedUrl+" HTTP/1.1"  必须是这个请求才会判断
+                        if (poc_HTTP[i].equals("GET "+modifiedUrl+" HTTP/1.1")){
+                            for (String header : Responseheaders) {
+                                if (header.contains("Content-Type: text/html")) {
+                                    IsResponseheaders = true;
+                                    break;
+                                }
                             }
                         }
-                    } else if (keys == "Cloud_HuaWei"){
-                        for (int i = 0; i < poc_HTTP.length - 1; i++) {
-                            String requestString = poc_HTTP[i] + "\r\nHost: " + host + "\r\nSec-Ch-Ua-Platform: \"Windows\""
-                                    + "\r\nUser-Agent: Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/130.0.6723.70 Safari/537.36\r\n"
-                                    + "\r\nConnection: keep-alive\r\n"
-                                    + "\r\nReferer: "+ Referer +"\r\n";;
-                            String requestBody = "";
-                            byte[] requestBytes = requestString.getBytes(StandardCharsets.UTF_8);
-                            IRequestInfo analyzedRequest = helpers.analyzeRequest(requestBytes);
-                            List<String> headers = analyzedRequest.getHeaders();
-                            byte[] request = helpers.buildHttpMessage(headers, requestBody.getBytes(StandardCharsets.UTF_8));
-
-                            // 构建HTTP服务
-                            IHttpService httpService = helpers.buildHttpService((String) host, 443, true);
-                            // 发送请求并获取响应
-                            IHttpRequestResponse response = callbacks.makeHttpRequest(httpService, request);
-                            int statusCode = getStatusCode(callbacks, response.getResponse());
-                            byte[] response1 = response.getResponse();
-                            try {
-                                String responseString = new String(response1, "UTF-8");
-                                if (statusCode == 200 && poc_HTTP[i].equals("GET / HTTP/1.1") && responseString.contains("</ListBucketResult>")) {
-                                    allMessages.append("Bucket遍历");
-                                    finalResponse = response;
-                                    hosts = (String) host;
-                                    return new RequestResponseWrapper(finalResponse, allMessages.toString(), hosts);
-                                } else if (statusCode == 404 && poc_HTTP[i].equals("GET / HTTP/1.1") && responseString.contains("The specified bucket does not exist")) {
-                                    allMessages.append("Bucket桶可接管");
-                                    finalResponse = response;
-                                    hosts = (String) host;
-                                    return new RequestResponseWrapper(finalResponse, allMessages.toString(), hosts);
-                                } else if (statusCode == 200 && poc_HTTP[i].equals("GET /?acl HTTP/1.1") && responseString.contains("<AccessControlPolicy>")) {
-                                    allMessages.append("Bucket ACL可读");
-                                    finalResponse = response;
-                                    hosts = (String) host;
-                                    return new RequestResponseWrapper(finalResponse, allMessages.toString(), hosts);
-                                } else if (statusCode == 200 && poc_HTTP[i].equals("GET /?policy HTTP/1.1") && responseString.contains("\"Effect\": \"allow\"")) {
-                                    allMessages.append("Bucket 权限策略为允许");
-                                    finalResponse = response;
-                                    hosts = (String) host;
-                                    return new RequestResponseWrapper(finalResponse, allMessages.toString(), hosts);
+                        // 响应状态码
+                        int statusCode = getStatusCode(callbacks, response.getResponse());
+                        // 响应内容
+                        byte[] response1 = response.getResponse();
+                        // 检测漏洞条件
+                        String message = null;
+                        String responseString = null;
+                        try {
+                            responseString = new String(response1, "UTF-8");
+                            if (statusCode == 200) {
+                                if (poc_HTTP[i].equals("GET / HTTP/1.1") && responseString.contains("</ListBucketResult>")) {
+                                    message = "Bucket遍历";
+                                } else if (poc_HTTP[i].equals("GET /?acl HTTP/1.1") && responseString.contains("<AccessControlPolicy>")) {
+                                    message = "Bucket ACL可读";
+                                } else if (poc_HTTP[i].equals("GET /?policy HTTP/1.1") && responseString.contains("\"Effect\": \"allow\"")) {
+                                    message = "Bucket 权限策略为允许";
+                                } else if (poc_HTTP[i].equals("PUT /123.html HTTP/1.1") && !"Cloud_HuaWei".equals(keys)) {
+                                    message = "Bucket文件上传";
                                 }
-                            } catch (UnsupportedEncodingException e) {
-                                throw new RuntimeException(e);
+                            } else if (statusCode == 404 && poc_HTTP[i].equals("GET / HTTP/1.1") && responseString.contains("The specified bucket does not exist") && !"Cloud_TengXun".equals(keys)) {
+                                message = "Bucket可接管";
                             }
-                        }
-                    }else if (keys == "Cloud_TengXun"){
-                        //TODO 腾讯云
-                        for (int i = 0; i < poc_HTTP.length; i++) {
-                            String requestString = poc_HTTP[i] + "\r\nHost: " + host + "\r\nSec-Ch-Ua-Platform: \"Windows\""
-                                    + "\r\nUser-Agent: Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/130.0.6723.70 Safari/537.36\r\n"
-                                    + "\r\nConnection: keep-alive\r\n"
-                                    + "\r\nContent-Type: <div style=\"display:none;\">Hidden Element</div><script>console.log('XSS Test');</script>\r\n"
-                                    + "\r\nReferer: "+ Referer +"\r\n";
-                            // 添加请求体（如果有）
-                            String requestBody = i == 3 ? "<div style=\"display:none;\">Hidden Element</div><script>console.log('XSS Test');</script>" : "";  // PUT 请求需要请求体
-                            byte[] requestBytes = requestString.getBytes(StandardCharsets.UTF_8);
-                            IRequestInfo analyzedRequest = helpers.analyzeRequest(requestBytes);
-                            List<String> headers = analyzedRequest.getHeaders();
-                            byte[] request = helpers.buildHttpMessage(headers, requestBody.getBytes(StandardCharsets.UTF_8));
-                            // 构建HTTP服务
-                            IHttpService httpService = helpers.buildHttpService((String) host, 443, true);
-                            // 发送请求并获取响应
-                            IHttpRequestResponse response = callbacks.makeHttpRequest(httpService, request);
-                            int statusCode = getStatusCode(callbacks, response.getResponse());
-                            byte[] response1 = response.getResponse();
-                            try {
-                                String responseString = new String(response1, "UTF-8");
-                                if (statusCode == 200 && poc_HTTP[i].equals("GET / HTTP/1.1") && responseString.contains("</ListBucketResult>")) {
-                                    allMessages.append("Bucket遍历");
-                                    finalResponse = response;
-                                    hosts = (String) host;
-                                    return new RequestResponseWrapper(finalResponse, allMessages.toString(), hosts);
-                                } else if (statusCode == 200 && poc_HTTP[i].equals("GET /?acl HTTP/1.1") && responseString.contains("<AccessControlPolicy>")) {
-                                    allMessages.append("Bucket ACL可读");
-                                    finalResponse = response;
-                                    hosts = (String) host;
-                                    return new RequestResponseWrapper(finalResponse, allMessages.toString(), hosts);
-                                } else if (statusCode == 200 && poc_HTTP[i].equals("GET /?policy HTTP/1.1") && responseString.contains("\"Effect\": \"allow\"")) {
-                                    allMessages.append("Bucket 权限策略为允许");
-                                    finalResponse = response;
-                                    hosts = (String) host;
-                                    return new RequestResponseWrapper(finalResponse, allMessages.toString(), hosts);
-                                } else if (statusCode == 200 && poc_HTTP[i].equals("PUT /123.html HTTP/1.1")) {
-                                    allMessages.append("Bucket文件上传,可能存在xss漏洞，F12查看控制台XSS Test");
-                                    finalResponse = response;
-                                    hosts = (String) host;
-                                    return new RequestResponseWrapper(finalResponse, allMessages.toString(), hosts);
-                                }
-
-                            } catch (UnsupportedEncodingException e) {
-                                throw new RuntimeException(e);
+                            if (IsResponseheaders) {
+                                message = "存储桶解析漏洞";
                             }
+                            //记录漏洞
+                            if (message != null) {
+                                results.add(new RequestResponseWrapper(response, message, (String) host));
+                            }
+                        } catch (UnsupportedEncodingException e) {
+                            throw new RuntimeException(e);
                         }
-
                     }
                 }
             }
         }
-        return new RequestResponseWrapper(null, "", null);
-    }
 
+        return results;
+    }
     //主动扫描
-    public  static  RequestResponseWrapper hostScan(IBurpExtenderCallbacks callbacks, IExtensionHelpers helpers,String host) {
+    public  static  List<RequestResponseWrapper> hostScan(IBurpExtenderCallbacks callbacks, IExtensionHelpers helpers,String host) {
+
+        List<RequestResponseWrapper> results = new ArrayList<>();
+//        String message = null;
+
         String hostName = host;
         int port = 443; // 默认HTTPS端口
         boolean useHttps = true; // 默认使用HTTPS
@@ -239,7 +127,6 @@ public class Poc_Scan {
 
             // 提取路径层级
             List<String> paths = extractPaths(basePath);
-
             for (String request : poc) {
                 // 分割请求行以提取方法和路径
                 String[] parts = request.split(" ");
@@ -314,45 +201,35 @@ public class Poc_Scan {
             IHttpService httpService = helpers.buildHttpService(hostName, port, useHttps);
             // 发送请求并获取响应
             IHttpRequestResponse response = callbacks.makeHttpRequest(httpService, request);
+            //如果响应为空
+            String message = null;
             if (response != null &&  response.getResponse() != null){
             int statusCode = getStatusCode(callbacks, response.getResponse());
             byte[] response1 = response.getResponse();
                 try {
                     String responseString = new String(response1, "UTF-8");
                     if (statusCode == 200  && responseString.contains("</ListBucketResult>")) {
-                        allMessages.append("Bucket遍历");
-                        finalResponse = response;
-                        hosts = hostName;
-                        return new RequestResponseWrapper(finalResponse, allMessages.toString(), hosts);
+                        message = "Bucket遍历";
                     } else if (statusCode == 404 && responseString.contains("The specified bucket does not exist")) {
-                        allMessages.append("Bucket桶可接管");
-                        finalResponse = response;
-                        hosts = hostName;
-                        return new RequestResponseWrapper(finalResponse, allMessages.toString(), hosts);
+                        message = "Bucket桶可接管";
                     } else if (statusCode == 200 && responseString.contains("<AccessControlPolicy>")) {
-                        allMessages.append("Bucket ACL可读");
-                        finalResponse = response;
-                        hosts = hostName;
-                        return new RequestResponseWrapper(finalResponse, allMessages.toString(), hosts);
+                        message = "Bucket ACL可读";
                     } else if (statusCode == 200  && responseString.contains("\"Effect\": \"allow\"")) {
-                        allMessages.append("Bucket 权限策略为允许");
-                        finalResponse = response;
-                        hosts = hostName;
-                        return new RequestResponseWrapper(finalResponse, allMessages.toString(), hosts);
+                        message = "Bucket 权限策略为允许";
                     } else if (statusCode == 200 && newRequest.contains("PUT")) {
-                        allMessages.append("Bucket文件上传,可能存在xss漏洞，F12查看控制台XSS Test");
-                        finalResponse = response;
-                        hosts = hostName;
-                        return new RequestResponseWrapper(finalResponse, allMessages.toString(), hosts);
+                        message = "Bucket文件上传";
+                    }
+                    if (message != null) {
+                        results.add(new RequestResponseWrapper(response, message, hostName));
                     }
                 } catch (UnsupportedEncodingException e) {
                     throw new RuntimeException(e);
                 }
             }else {
-                return new RequestResponseWrapper(null, "Destination is unreachable", hostName);
+                results.add(new RequestResponseWrapper(null, "Destination is unreachable", hostName));
             }
         }
-        return new RequestResponseWrapper(null, "no vul", hostName);
+        return results;
     }
     public static List<String> extractPaths(String uri) {
         // 去除末尾斜杠

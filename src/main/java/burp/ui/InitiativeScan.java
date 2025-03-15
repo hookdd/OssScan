@@ -10,6 +10,7 @@ import java.awt.*;
 import java.awt.event.ActionEvent;
 import java.awt.event.ActionListener;
 import java.util.ArrayList;
+import java.util.List;
 
 import static burp.Utils.Poc_Scan.hostScan;
 
@@ -45,24 +46,30 @@ public  class InitiativeScan extends AbstractTableModel implements ITab, IMessag
                     JOptionPane.showMessageDialog(TopAndDown_SplitPane, "输入不能为空！", "警告", JOptionPane.WARNING_MESSAGE);
                 } else {
                     // 使用SwingWorker来异步执行HTTP请求
-                    new SwingWorker<Poc_Scan.RequestResponseWrapper, Void>() {
+                    new SwingWorker<List<Poc_Scan.RequestResponseWrapper>, Void>() {
                         @Override
-                        protected Poc_Scan.RequestResponseWrapper doInBackground() throws Exception {
-                            return hostScan(callbacks, helpers, host);
+                        protected List<Poc_Scan.RequestResponseWrapper> doInBackground() throws Exception {
+                            List<Poc_Scan.RequestResponseWrapper> requestResponseWrappers = hostScan(callbacks, helpers, host);
+                            if (requestResponseWrappers == null || requestResponseWrappers.isEmpty()) {
+                                throw new Exception("未获取到扫描结果");
+                            }
+                            return requestResponseWrappers; // 返回整个列表
                         }
                         @Override
                         protected void done() {
                             try {
-                                Poc_Scan.RequestResponseWrapper responseWrapper = get();
+                                List<Poc_Scan.RequestResponseWrapper> responseWrapper = get();
                                 if (responseWrapper != null) {
-                                    IHttpRequestResponse requestResponse = responseWrapper.getRequestResponse();
-                                    String message1 = responseWrapper.getMessage();
-                                    String hosts = responseWrapper.getHosts();
-                                    if (message1 != null && !message1.isEmpty()) {
-                                        SwingUtilities.invokeLater(() -> {
-                                            Udatas.add(new TablesData(Udatas.size() + 1, hosts, message1, requestResponse));
-                                            ((URLTableModel) Utable.getModel()).fireTableDataChanged(); // 通知表格数据已更改
-                                        });
+                                    for (Poc_Scan.RequestResponseWrapper wrapper : responseWrapper) {
+                                        IHttpRequestResponse requestResponse = wrapper.getRequestResponse();
+                                        String message1 = wrapper.getMessage();
+                                        String hosts = wrapper.getHosts();
+                                        if (message1 != null && !message1.isEmpty()) {
+                                            SwingUtilities.invokeLater(() -> {
+                                                Udatas.add(new TablesData(Udatas.size() + 1, hosts, message1, requestResponse));
+                                                ((URLTableModel) Utable.getModel()).fireTableDataChanged(); // 通知表格数据已更改
+                                            });
+                                        }
                                     }
                                 }
                             } catch (Exception ex) {

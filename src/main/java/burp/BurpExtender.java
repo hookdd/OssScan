@@ -10,9 +10,14 @@ import javax.swing.table.TableModel;
 import java.awt.*;
 import java.io.PrintWriter;
 import java.io.UnsupportedEncodingException;
+import java.net.URL;
 import java.util.*;
+import java.util.List;
+import java.util.regex.Matcher;
+import java.util.regex.Pattern;
 
 import static burp.Utils.Date_tidy.extractRequestUrl;
+import static burp.Utils.Date_tidy.mergeMaps;
 
 public class BurpExtender extends AbstractTableModel implements IBurpExtender, ITab, IMessageEditorController {
 
@@ -96,38 +101,72 @@ public class BurpExtender extends AbstractTableModel implements IBurpExtender, I
         proxyListener = new IProxyListener() {
             @Override
             public void processProxyMessage(boolean messageIsRequest, IInterceptedProxyMessage message) {
+//                HashMap<String, ArrayList> CouldHashMap = new HashMap<>();
                 // 获取请求信息
                 IHttpRequestResponse messageInfo = message.getMessageInfo();
+                //请求url
+                IRequestInfo analyzeRequest = helpers.analyzeRequest(messageInfo);
+                byte[] request = messageInfo.getRequest();
+                //获取到所有请求的host
+                String requesthost = Date_tidy.extractUrl(request);
+                URL url = analyzeRequest.getUrl();
+                String path = url.getPath(); // 示例：/files/xxx/1704866466827png
+                //获取所有响应头
+                IResponseInfo analyzeResponse = helpers.analyzeResponse(messageInfo.getResponse());
+                List<String> headers = analyzeResponse.getHeaders();
+                //ExtractHeaders判读是否为存储桶
+                CouldHashMap = Date_tidy.ExtractHeaders(headers,requesthost);
+
+                // 定义需要处理的扩展名列表
+                String[] targetExtensions = {".txt", ".json", ".png","png",".jpg",".pdf",".zip"};
+                String regex = ".*(" + String.join("|", targetExtensions) + ")$";
+                Pattern pattern = Pattern.compile(regex, Pattern.CASE_INSENSITIVE);
+                Matcher matcher = pattern.matcher(path);
+                boolean isTargetFile = matcher.find(); // 判断路径是否匹配目标扩展名
+
+                String newParam = "response-content-type=text/html";
+                //url.getQuery();判断url中是否存在？
+                String currentQuery = url.getQuery();
+                String modifiedUrl =null;
+                if (isTargetFile) {
+                    if (currentQuery == null) {
+                        // 无参数时拼接 ?param
+                        modifiedUrl = path + "?" + newParam;
+                    } else {
+                        // 已有参数时拼接 &param
+                        modifiedUrl = path + "&" + newParam;
+                    }
+                }
                 boolean includePath=true;
                 String source_url = extractRequestUrl(messageInfo,includePath);
                 //messageIsRequest为ture时候为请求信息，为false时候为响应信息
                 if (messageIsRequest) {
-                    byte[] request = messageInfo.getRequest();
-                    //获取到所有请求的host
-                    String requesthost  = Date_tidy.extractUrl(request);
-                    //正则匹配查看是否否和oss的类型
-                    CouldHashMap = Date_tidy.extractCloudHosts(requesthost);
+                    HashMap<String, ArrayList> requestData = Date_tidy.extractCloudHosts(requesthost);
+                    mergeMaps(CouldHashMap,requestData); // 合并请求数据
                 }else{
                     // 处理响应
                     byte[] response = messageInfo.getResponse();
                     String responseString = null;
                     try {
                         responseString = new String(response, "UTF-8");
-                        CouldHashMap = Date_tidy.extractCloudHosts(responseString);
+                        HashMap<String, ArrayList> responseData = Date_tidy.extractCloudHosts(responseString);
+                        mergeMaps(CouldHashMap, responseData); // 合并响应数据
                     } catch (UnsupportedEncodingException e) {
                         throw new RuntimeException(e);
                     }
                 }
-                //使用 lastRequestHost 来代替 requesthost
+
                 if (!CouldHashMap.isEmpty()){
-                    Poc_Scan.RequestResponseWrapper responseWrapper = Poc_Scan.buildHttpServiceFromUrl(callbacks, helpers, CouldHashMap,messageInfo);
-                    IHttpRequestResponse requestResponse = responseWrapper.getRequestResponse();
-                    String message1 = responseWrapper.getMessage();
-                    String hosts = responseWrapper.getHosts();
-                    //因为如果是华为云的话会返回空的requestResponse、message1等，但是id还是会自增，为了防止所以if判断
-                    if (message1 != null && !message1.isEmpty()) {
-                        Udatas.add(new TablesData(Udatas.size() + 1, source_url, hosts, message1, requestResponse));
-                        ((URLTableModel) Utable.getModel()).fireTableDataChanged(); // 通知表格数据已更改，将获取的数据在表格显示
+                    List<Poc_Scan.RequestResponseWrapper> requestResponseWrappers = Poc_Scan.buildHttpServiceFromUrl(callbacks, helpers, CouldHashMap, messageInfo,modifiedUrl);
+                    for (Poc_Scan.RequestResponseWrapper requestResponseWrapper : requestResponseWrappers) {
+                        IHttpRequestResponse requestResponse = requestResponseWrapper.getRequestResponse();
+                        String message1 = requestResponseWrapper.getMessage();
+                        String hosts = requestResponseWrapper.getHosts();
+                        //因为如果是华为云的话会返回空的requestResponse、message1等，但是id还是会自增，为了防止所以if判断
+                        if (message1 != null && !message1.isEmpty()) {
+                            Udatas.add(new TablesData(Udatas.size() + 1, source_url, hosts, message1, requestResponse));
+                            ((URLTableModel) Utable.getModel()).fireTableDataChanged(); // 通知表格数据已更改，将获取的数据在表格显示
+                        }
                     }
                 }
 

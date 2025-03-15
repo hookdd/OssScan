@@ -5,9 +5,7 @@ import burp.IExtensionHelpers;
 import burp.IHttpRequestResponse;
 import burp.IRequestInfo;
 
-import java.util.ArrayList;
-import java.util.HashMap;
-import java.util.List;
+import java.util.*;
 import java.util.regex.Matcher;
 import java.util.regex.Pattern;
 
@@ -21,6 +19,74 @@ public class Date_tidy {
     public static final String Cloud_CTYUN = "Cloud_CTYUN";
 
     public static final String Cloud_JDCloud = "Cloud_JDCloud";
+
+    public static final String Cloud_Qnm = "Cloud_Qnm";
+
+    //合并数据
+    /**
+     * 合并两个Map，将source中的条目添加到target
+     * @param target 目标Map（被合并的对象）
+     * @param source 来源Map（提供新数据）
+     */
+    public static void mergeMaps(Map<String, ArrayList> target,  Map<String, ArrayList> source) {
+        Set<String> allHosts = new HashSet<>();
+
+        // 收集 target 中已有的所有 host
+        for (ArrayList<String> hosts : target.values()) {
+            allHosts.addAll(hosts);
+        }
+
+        // 合并 source，过滤已存在的 host
+        for (Map.Entry<String, ArrayList> entry: source.entrySet()) {
+            String key = entry.getKey();
+            ArrayList<String> values = entry.getValue();
+            ArrayList<String> filteredValues = new ArrayList<>();
+
+            for (String host : values) {
+                if (!allHosts.contains(host)) {
+                    filteredValues.add(host);
+                    allHosts.add(host); // 记录已合并的 host
+                }
+            }
+
+            if (!filteredValues.isEmpty()) {
+                if (target.containsKey(key)) {
+                    target.get(key).addAll(filteredValues);
+                } else {
+                    target.put(key, new ArrayList<>(filteredValues));
+                }
+            }
+        }
+    }
+    public static HashMap<String, ArrayList> ExtractHeaders(List<String> headers,String host) {
+        HashMap<String, ArrayList> Cnamehost = new HashMap<>();
+        for (String header : headers) {
+            String headerLower = header.toLowerCase(); // 统一转为小写
+            if (headerLower.contains("x-obs")){
+                ArrayList<String> hostlist = new ArrayList<>();
+                hostlist.add(host);
+                Cnamehost.put(Cloud_HuaWei,hostlist);
+            } else if (headerLower.contains("x-cos")) {
+                ArrayList<String> hostlist = new ArrayList<>();
+                hostlist.add(host);
+                Cnamehost.put(Cloud_TengXun,hostlist);
+            } else if (headerLower.contains("x-oss")) {
+                ArrayList<String> hostlist = new ArrayList<>();
+                hostlist.add(host);
+                Cnamehost.put(Cloud_Alibaba,hostlist);
+            } else if (headerLower.contains("x-amz")) {
+                ArrayList<String> hostlist = new ArrayList<>();
+                hostlist.add(host);
+                Cnamehost.put(Cloud_AWS,hostlist);
+            } else if (headerLower.contains("x-qiniu") || headers.contains("x-qnm")) {
+                ArrayList<String> hostlist = new ArrayList<>();
+                hostlist.add(host);
+                Cnamehost.put(Cloud_Qnm,hostlist);
+            }
+        }
+        return Cnamehost;
+    }
+
 
     // 提取 OSSURL 地址
     public static String extractUrl(byte[] request) {
@@ -88,6 +154,7 @@ public class Date_tidy {
         String awsS3Regex4 ="(?:https?://)?([a-zA-Z0-9.-]+\\.(?:s3(?:-website)?\\.?[a-zA-Z0-9.-]*\\.amazonaws\\.com))";
         String ctyunRegex = "([a-zA-Z0-9-]+\\.[a-zA-Z0-9-]+\\.zos\\.ctyun\\.cn)";
         String jdCloudRegex = "https?://([a-zA-Z0-9-]+\\.[a-zA-Z0-9-]+\\.jcloud\\.com)";
+        String qiniuRegex = "(?:https?://)?([a-zA-Z0-9-]+\\.[a-zA-Z0-9.-]+\\.qnssl\\.com)";
 
         // 编译正则表达式
         Pattern huaweiObsPattern = Pattern.compile(huaweiObsRegex, Pattern.CASE_INSENSITIVE);
@@ -96,6 +163,7 @@ public class Date_tidy {
         Pattern awsS3Pattern4 = Pattern.compile(awsS3Regex4, Pattern.CASE_INSENSITIVE);
         Pattern ctyunPattern = Pattern.compile(ctyunRegex, Pattern.CASE_INSENSITIVE);
         Pattern jdCloudPattern = Pattern.compile(jdCloudRegex, Pattern.CASE_INSENSITIVE);
+        Pattern qiniuPattern = Pattern.compile(qiniuRegex, Pattern.CASE_INSENSITIVE);
 
         // 匹配并提取华为云 OBS
         Matcher huaweiObsMatcher = huaweiObsPattern.matcher(text);
@@ -143,6 +211,13 @@ public class Date_tidy {
             ArrayList<String> jdCloudHosts = new ArrayList<>();
             jdCloudHosts.add(jdCloudMatcher.group(1));
             CouldHashMap.put(Cloud_JDCloud, jdCloudHosts);
+        }
+        // 匹配并提取七牛云
+        Matcher qiniuMatcher = qiniuPattern.matcher(text);
+        while (qiniuMatcher.find()) {
+            ArrayList<String> qiniuHosts = new ArrayList<>();
+            qiniuHosts.add(qiniuMatcher.group(1));
+            CouldHashMap.put(Cloud_Qnm, qiniuHosts);
         }
         return CouldHashMap;
     }
