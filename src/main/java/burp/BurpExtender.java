@@ -118,7 +118,7 @@ public class BurpExtender extends AbstractTableModel implements IBurpExtender, I
                 CouldHashMap = Date_tidy.ExtractHeaders(headers,requesthost);
 
                 // 定义需要处理的扩展名列表
-                String[] targetExtensions = {".txt", ".json", ".png","png",".jpg",".pdf",".zip"};
+                String[] targetExtensions = {".txt",".js", ".json", ".png","png",".jpg",".pdf",".zip"};
                 String regex = ".*(" + String.join("|", targetExtensions) + ")$";
                 Pattern pattern = Pattern.compile(regex, Pattern.CASE_INSENSITIVE);
                 Matcher matcher = pattern.matcher(path);
@@ -307,6 +307,7 @@ public class BurpExtender extends AbstractTableModel implements IBurpExtender, I
                     ((URLTableModel) getModel()).removeRow(selectedRow);
                 }
             });
+//            JMenuItem CopyUrl = new JMenuItem("copy url");
 
             popupMenu.add(clearAll);
             popupMenu.add(deleteRow);

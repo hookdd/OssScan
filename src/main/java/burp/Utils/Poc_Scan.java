@@ -8,6 +8,8 @@ import java.net.MalformedURLException;
 import java.net.URL;
 import java.nio.charset.StandardCharsets;
 import java.util.*;
+import java.util.regex.Matcher;
+import java.util.regex.Pattern;
 
 import static burp.Utils.Date_tidy.extractRequestUrl;
 
@@ -16,13 +18,26 @@ public class Poc_Scan {
     private static Set<String> scannedHosts = Collections.synchronizedSet(new HashSet<>());
     public  static  List<RequestResponseWrapper> buildHttpServiceFromUrl(IBurpExtenderCallbacks callbacks, IExtensionHelpers helpers, HashMap<String, ArrayList> CouldHashMap, IHttpRequestResponse messageInfo,String modifiedUrl) {
 
-        String[] poc_HTTP = {
+        // 动态构建 POC 列表
+        List<String> pocList = new ArrayList<>(Arrays.asList(
                 "GET / HTTP/1.1",
                 "GET /?acl HTTP/1.1",
                 "GET /?policy HTTP/1.1",
                 "PUT /123.html HTTP/1.1",
-                "GET "+modifiedUrl+" HTTP/1.1"
-        };
+                "PUT /123.png HTTP/1.1"
+        ));
+        // 仅当 modifiedUrl 有效时添加
+        if (modifiedUrl != null && !modifiedUrl.trim().isEmpty()) {
+            pocList.add("GET " + modifiedUrl + " HTTP/1.1");
+        }
+//        String[] pocList = {
+//                "GET / HTTP/1.1",
+//                "GET /?acl HTTP/1.1",
+//                "GET /?policy HTTP/1.1",
+//                "PUT /123.html HTTP/1.1",
+//                "PUT /123.png HTTP/1.1",
+//                "GET "+ modifiedUrl +" HTTP/1.1"
+//        };
         List<RequestResponseWrapper> results = new ArrayList<>();
 
         boolean includePath = true;
@@ -34,11 +49,17 @@ public class Poc_Scan {
             for (Object host : list) {
                 if (!scannedHosts.contains(host)) { // 检查是否已经扫描过该主机名
                     scannedHosts.add((String) host); // 将主机名添加到已经扫描过的集合中
-                    for (int i = 0; i < poc_HTTP.length; i++) {
-                        String requestString = poc_HTTP[i] + "\r\nHost: " + host + "\r\nSec-Ch-Ua-Platform: \"Windows\""
-                                + "\r\nUser-Agent: Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/130.0.6723.70 Safari/537.36\r\n"
-                                + "\r\nConnection: keep-alive\r\n"
-                                + "\r\nReferer: " + Referer + "\r\n";
+
+                    String hostWithPort = (String) host; // 假设 host 格式为 "example.com:9443"
+                    String[] hostParts = hostWithPort.split(":");
+                    String hostName = hostParts[0];
+                    int targetPort = hostParts.length > 1 ? Integer.parseInt(hostParts[1]) : 443;
+
+                    for (int i = 0; i < pocList.size(); i++) {
+                        String requestString = pocList.get(i) + "\r\nHost: " + host + "\r\nSec-Ch-Ua-Platform: \"Windows\""
+                                + "\r\nUser-Agent: Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/130.0.6723.70 Safari/537.36"
+                                + "\r\nConnection: keep-alive"
+                                + "\r\nReferer: " + Referer;
                         // 添加请求体（如果有）
                         String requestBody = (i == 3 && !"Cloud_HuaWei".equals(keys)) ? "<div style=\"display:none;\">Hidden Element</div><script>console.log('XSS Test');</script>" : ""; // PUT 请求需要请求体
 
@@ -47,23 +68,26 @@ public class Poc_Scan {
                         List<String> headers = analyzedRequest.getHeaders();
                         byte[] request = helpers.buildHttpMessage(headers, requestBody.getBytes(StandardCharsets.UTF_8));
                         // 构建HTTP服务
-                        IHttpService httpService = helpers.buildHttpService((String) host, 443, true);
+                        IHttpService httpService = helpers.buildHttpService(hostName, targetPort, true);
                         // 发送请求并获取响应
                         IHttpRequestResponse response = callbacks.makeHttpRequest(httpService, request);
                         byte[] responseBytes = response.getResponse();
                         // 响应头判断是否解析漏洞
                         Boolean IsResponseheaders = false;
-                        IResponseInfo analyzeResponse = helpers.analyzeResponse(responseBytes);
-                        List<String> Responseheaders = analyzeResponse.getHeaders();
-                        //"GET "+modifiedUrl+" HTTP/1.1"  必须是这个请求才会判断
-                        if (poc_HTTP[i].equals("GET "+modifiedUrl+" HTTP/1.1")){
-                            for (String header : Responseheaders) {
-                                if (header.contains("Content-Type: text/html")) {
-                                    IsResponseheaders = true;
-                                    break;
+                        if (modifiedUrl != null){
+                            IResponseInfo analyzeResponse = helpers.analyzeResponse(responseBytes);
+                            List<String> Responseheaders = analyzeResponse.getHeaders();
+                            //"GET "+modifiedUrl+" HTTP/1.1"  必须是这个请求才会判断
+                            if (pocList.get(i).equals("GET "+ modifiedUrl +" HTTP/1.1")){
+                                for (String header : Responseheaders) {
+                                    if (header.contains("Content-Type: text/html")) {
+                                        IsResponseheaders = true;
+                                        break;
+                                    }
                                 }
                             }
                         }
+
                         // 响应状态码
                         int statusCode = getStatusCode(callbacks, response.getResponse());
                         // 响应内容
@@ -74,16 +98,16 @@ public class Poc_Scan {
                         try {
                             responseString = new String(response1, "UTF-8");
                             if (statusCode == 200) {
-                                if (poc_HTTP[i].equals("GET / HTTP/1.1") && responseString.contains("</ListBucketResult>")) {
+                                if (pocList.get(i).equals("GET / HTTP/1.1") && responseString.contains("</ListBucketResult>")) {
                                     message = "Bucket遍历";
-                                } else if (poc_HTTP[i].equals("GET /?acl HTTP/1.1") && responseString.contains("<AccessControlPolicy>")) {
+                                } else if (pocList.get(i).equals("GET /?acl HTTP/1.1") && responseString.contains("<AccessControlPolicy>")) {
                                     message = "Bucket ACL可读";
-                                } else if (poc_HTTP[i].equals("GET /?policy HTTP/1.1") && responseString.contains("\"Effect\": \"allow\"")) {
+                                } else if (pocList.get(i).equals("GET /?policy HTTP/1.1") && responseString.contains("\"Effect\": \"allow\"")) {
                                     message = "Bucket 权限策略为允许";
-                                } else if (poc_HTTP[i].equals("PUT /123.html HTTP/1.1") && !"Cloud_HuaWei".equals(keys)) {
+                                } else if ((pocList.get(i).equals("PUT /123.html HTTP/1.1")||pocList.get(i).equals("PUT /123.png HTTP/1.1")) && !"Cloud_HuaWei".equals(keys)) {
                                     message = "Bucket文件上传";
                                 }
-                            } else if (statusCode == 404 && poc_HTTP[i].equals("GET / HTTP/1.1") && responseString.contains("The specified bucket does not exist") && !"Cloud_TengXun".equals(keys)) {
+                            } else if (statusCode == 404 && pocList.get(i).equals("GET / HTTP/1.1") && responseString.contains("The specified bucket does not exist") && !"Cloud_TengXun".equals(keys)) {
                                 message = "Bucket可接管";
                             }
                             if (IsResponseheaders) {
@@ -107,17 +131,10 @@ public class Poc_Scan {
     public  static  List<RequestResponseWrapper> hostScan(IBurpExtenderCallbacks callbacks, IExtensionHelpers helpers,String host) {
 
         List<RequestResponseWrapper> results = new ArrayList<>();
-//        String message = null;
-
+        String modifiedUrl =null;
         String hostName = host;
         int port = 443; // 默认HTTPS端口
         boolean useHttps = true; // 默认使用HTTPS
-        String[] poc = {
-                "GET / HTTP/1.1",
-                "GET /?acl HTTP/1.1",
-                "GET /?policy HTTP/1.1",
-                "PUT /123.html HTTP/1.1"
-        };
         // 存储拼接后的请求
         List<String> newRequests = new ArrayList<>();
         URL urls = null;
@@ -125,14 +142,59 @@ public class Poc_Scan {
             urls = new URL(host);
             String basePath = urls.getPath();
 
+            // 定义需要处理的扩展名列表
+            String[] targetExtensions = {".txt",".js", ".json", ".png","png",".jpg",".pdf",".zip"};
+            String regex = ".*(" + String.join("|", targetExtensions) + ")$";
+            Pattern pattern = Pattern.compile(regex, Pattern.CASE_INSENSITIVE);
+            Matcher matcher = pattern.matcher(basePath);
+            boolean isTargetFile = matcher.find(); // 判断路径是否匹配目标扩展名
+            // 定义poc
+            String newParam = "response-content-type=text/html";
+            //url.getQuery();判断url中是否存在？
+            String currentQuery = urls.getQuery();
+            if (isTargetFile) {
+                if (currentQuery == null) {
+                    // 无参数时拼接 ?param
+                    modifiedUrl = basePath + "?" + newParam;
+                } else {
+                    // 已有参数时拼接 &param
+                    modifiedUrl = basePath + "&" + newParam;
+                }
+            }
+            // 动态构建 POC 列表
+            List<String> pocList = new ArrayList<>(Arrays.asList(
+                    "GET / HTTP/1.1",
+                    "GET /?acl HTTP/1.1",
+                    "GET /?policy HTTP/1.1",
+                    "PUT /123.html HTTP/1.1",
+                    "PUT /123.png HTTP/1.1"
+            ));
+//            String[] poc = {
+//                    "GET / HTTP/1.1",
+//                    "GET /?acl HTTP/1.1",
+//                    "GET /?policy HTTP/1.1",
+//                    "PUT /123.html HTTP/1.1",
+//                    "PUT /123.png HTTP/1.1",
+//                    "GET "+ modifiedUrl +" HTTP/1.1"
+//
+//            };
+            // 仅当 modifiedUrl 有效时添加
+            if (modifiedUrl != null && !modifiedUrl.trim().isEmpty()) {
+                pocList.add("GET " + modifiedUrl + " HTTP/1.1");
+            }
+
             // 提取路径层级
             List<String> paths = extractPaths(basePath);
-            for (String request : poc) {
+            for (String request : pocList) {
                 // 分割请求行以提取方法和路径
                 String[] parts = request.split(" ");
                 String method = parts[0];
                 String originalPath = parts[1];
                 String protocol = parts[2];
+                if (originalPath.equals(modifiedUrl) && modifiedUrl != null){
+                    newRequests.add(method + " " +modifiedUrl+ " " + protocol);
+                    break;
+                }
                 for (String path : paths) {
                     // 如果路径是根路径（"/"），直接使用path
                     if ("/".equals(originalPath)) {
@@ -179,11 +241,6 @@ public class Poc_Scan {
         if (pathIndex != -1) {
             hostName = hostName.substring(0, pathIndex);
         }
-        //扫描
-        StringBuilder allMessages = new StringBuilder();
-        IHttpRequestResponse finalResponse = null;  // 初始化最终响应
-        String hosts=null;
-
         for (String newRequest : newRequests) {
             String requestString = newRequest + "\r\nHost: " + hostName + "\r\nSec-Ch-Ua-Platform: \"Windows\""
                     + "\r\nUser-Agent: Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/130.0.6723.70 Safari/537.36\r\n"
@@ -201,6 +258,22 @@ public class Poc_Scan {
             IHttpService httpService = helpers.buildHttpService(hostName, port, useHttps);
             // 发送请求并获取响应
             IHttpRequestResponse response = callbacks.makeHttpRequest(httpService, request);
+            byte[] responseBytes = response.getResponse();
+            // 响应头判断是否解析漏洞
+            Boolean IsResponseheaders = false;
+            if (modifiedUrl != null){
+                IResponseInfo analyzeResponse = helpers.analyzeResponse(responseBytes);
+                List<String> Responseheaders = analyzeResponse.getHeaders();
+                //"GET "+modifiedUrl+" HTTP/1.1"  必须是这个请求才会判断
+                if (newRequest.equals("GET "+ modifiedUrl +" HTTP/1.1")){
+                    for (String header : Responseheaders) {
+                        if (header.contains("Content-Type: text/html")) {
+                            IsResponseheaders = true;
+                            break;
+                        }
+                    }
+                }
+            }
             //如果响应为空
             String message = null;
             if (response != null &&  response.getResponse() != null){
@@ -218,9 +291,13 @@ public class Poc_Scan {
                         message = "Bucket 权限策略为允许";
                     } else if (statusCode == 200 && newRequest.contains("PUT")) {
                         message = "Bucket文件上传";
+                    }else if (IsResponseheaders) {
+                        message = "存储桶解析漏洞";
                     }
                     if (message != null) {
                         results.add(new RequestResponseWrapper(response, message, hostName));
+                    }else {
+                        results.add(new RequestResponseWrapper(response, "未发现漏洞", hostName));
                     }
                 } catch (UnsupportedEncodingException e) {
                     throw new RuntimeException(e);
