@@ -7,8 +7,11 @@ import javax.swing.*;
 import javax.swing.table.AbstractTableModel;
 import javax.swing.table.TableModel;
 import java.awt.*;
+import java.awt.datatransfer.Clipboard;
+import java.awt.datatransfer.StringSelection;
 import java.awt.event.ActionEvent;
 import java.awt.event.ActionListener;
+import java.io.PrintWriter;
 import java.util.ArrayList;
 import java.util.List;
 
@@ -23,6 +26,7 @@ public  class InitiativeScan extends AbstractTableModel implements ITab, IMessag
     private IMessageEditor HResponseTextEditor;
     private IHttpRequestResponse currentlyDisplayedItem;
     private InitiativeScan.URLTable Utable;
+    private PrintWriter stdout;
 
 
     public JSplitPane InitiativeUI() {
@@ -175,6 +179,33 @@ public  class InitiativeScan extends AbstractTableModel implements ITab, IMessag
                 fireTableRowsDeleted(row, row); // 通知表格已删除一行
             }
         }
+        //复制所有行的url请请求
+        public void copyUrl(int row) {
+            if (row >= 0 && row < Udatas.size()) {
+                InitiativeScan.TablesData dataEntry = Udatas.get(row);
+                if (dataEntry != null && dataEntry.requestResponse != null) {
+                    try {
+                        // 获取HTTP服务信息（Host和端口）
+                        IHttpService httpService = dataEntry.requestResponse.getHttpService();
+                        // 解析请求URL路径
+                        byte[] request = dataEntry.requestResponse.getRequest();
+                        String requestString = new String(request, "UTF-8");
+                        String[] lines = requestString.split("\r\n");
+                        String[] s1 = lines[0].split(" ");
+                        String path = s1[1];
+                        // 构造完整URL（格式：https://host/path）
+                        String fullUrl = "https://" + httpService.getHost() + path;
+
+                        // 复制到剪贴板
+                        StringSelection selection = new StringSelection(fullUrl);
+                        Clipboard clipboard = Toolkit.getDefaultToolkit().getSystemClipboard();
+                        clipboard.setContents(selection, null);
+                    } catch (Exception e) {
+                        stdout.println("Error copying URL: " + e.getMessage());
+                    }
+                }
+            }
+        }
     }
     public static class TablesData {
         final int Id;
@@ -211,9 +242,18 @@ public  class InitiativeScan extends AbstractTableModel implements ITab, IMessag
                     ((InitiativeScan.URLTableModel) getModel()).removeRow(selectedRow);
                 }
             });
+            //复制请求url
+            JMenuItem CopyUrl = new JMenuItem("copy url");
+            CopyUrl.addActionListener(e -> {
+                int selectedRow = getSelectedRow();
+                if (selectedRow != -1){
+                    ((InitiativeScan.URLTableModel) getModel()).copyUrl(selectedRow);
+                }
+            });
 
             popupMenu.add(clearAll);
             popupMenu.add(deleteRow);
+            popupMenu.add(CopyUrl);
             this.setComponentPopupMenu(popupMenu);
         }
 

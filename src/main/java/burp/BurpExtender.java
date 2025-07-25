@@ -8,13 +8,19 @@ import javax.swing.*;
 import javax.swing.table.AbstractTableModel;
 import javax.swing.table.TableModel;
 import java.awt.*;
+import java.awt.datatransfer.Clipboard;
+import java.awt.datatransfer.StringSelection;
 import java.io.PrintWriter;
 import java.io.UnsupportedEncodingException;
 import java.net.URL;
 import java.util.*;
 import java.util.List;
+import java.util.concurrent.ExecutorService;
+import java.util.concurrent.Executors;
 import java.util.regex.Matcher;
 import java.util.regex.Pattern;
+
+import java.awt.Toolkit;
 
 import static burp.Utils.Date_tidy.extractRequestUrl;
 import static burp.Utils.Date_tidy.mergeMaps;
@@ -45,8 +51,21 @@ public class BurpExtender extends AbstractTableModel implements IBurpExtender, I
     private URLTable Utable;
     // 新增 IProxyListener 成员变量
     private IProxyListener proxyListener;
+    //响应包过滤
+    public static final Set<String> unLegalExtensionSet = new HashSet<>(Arrays.asList(
+            // 视频格式（无文本内容）
+            "mp4", "avi", "mov", "wmv", "flv", "mpeg", "mpg", "mpe", "ogv", "webm", "3gp", "3g2",
+            // 音频格式
+            "mp3", "wav", "aac", "midi", "mid", "oga", "ra", "aiff", "au", "weba", "snd",
+            // 压缩文件
+            "zip", "rar", "7z", "gz", "bz2", "bz", "tar", "cab", "arc",
+            // 其他二进制
+            "exe", "dll", "so", "class", "jar", "swf", "rmvb", "rm", "bin", "dat", "cab"
+    ));
+    // BurpExtender.java (注册代理监听器时)
+    private final ExecutorService scanExecutor = Executors.newFixedThreadPool(3);
 
-
+    String modifiedUrl =null;
 
 
     public void registerExtenderCallbacks(IBurpExtenderCallbacks iBurpExtenderCallbacks) {
@@ -59,8 +78,7 @@ public class BurpExtender extends AbstractTableModel implements IBurpExtender, I
         this.stdout = new PrintWriter(callbacks.getStdout(), true);
         stdout.println("安装成功");
         stdout.println("对于acl、policy策略只有读取扫描，是否可以上传需要自行尝试。");
-
-
+        stdout.println("OSS_Scan_1.5");
         // 初始化 UI 界面
         M_JTabbedPane = new JTabbedPane();
         //分割线
@@ -101,7 +119,6 @@ public class BurpExtender extends AbstractTableModel implements IBurpExtender, I
         proxyListener = new IProxyListener() {
             @Override
             public void processProxyMessage(boolean messageIsRequest, IInterceptedProxyMessage message) {
-//                HashMap<String, ArrayList> CouldHashMap = new HashMap<>();
                 // 获取请求信息
                 IHttpRequestResponse messageInfo = message.getMessageInfo();
                 //请求url
@@ -111,14 +128,13 @@ public class BurpExtender extends AbstractTableModel implements IBurpExtender, I
                 String requesthost = Date_tidy.extractUrl(request);
                 URL url = analyzeRequest.getUrl();
                 String path = url.getPath(); // 示例：/files/xxx/1704866466827png
-                //获取所有响应头
-                IResponseInfo analyzeResponse = helpers.analyzeResponse(messageInfo.getResponse());
-                List<String> headers = analyzeResponse.getHeaders();
-                //ExtractHeaders判读是否为存储桶
-                CouldHashMap = Date_tidy.ExtractHeaders(headers,requesthost);
-
+                int lastDotIndex = path.lastIndexOf('.');
+                String type = "";
+                if (lastDotIndex != -1 && lastDotIndex < path.length() - 1) {
+                    type = path.substring(lastDotIndex + 1).toLowerCase();
+                }
                 // 定义需要处理的扩展名列表
-                String[] targetExtensions = {".txt",".js", ".json", ".png","png",".jpg",".pdf",".zip"};
+                String[] targetExtensions = {".txt",".js", ".json", ".png",".jpg",".pdf",".zip"};
                 String regex = ".*(" + String.join("|", targetExtensions) + ")$";
                 Pattern pattern = Pattern.compile(regex, Pattern.CASE_INSENSITIVE);
                 Matcher matcher = pattern.matcher(path);
@@ -127,7 +143,6 @@ public class BurpExtender extends AbstractTableModel implements IBurpExtender, I
                 String newParam = "response-content-type=text/html";
                 //url.getQuery();判断url中是否存在？
                 String currentQuery = url.getQuery();
-                String modifiedUrl =null;
                 if (isTargetFile) {
                     if (currentQuery == null) {
                         // 无参数时拼接 ?param
@@ -148,26 +163,51 @@ public class BurpExtender extends AbstractTableModel implements IBurpExtender, I
                     byte[] response = messageInfo.getResponse();
                     String responseString = null;
                     try {
-                        responseString = new String(response, "UTF-8");
-                        HashMap<String, ArrayList> responseData = Date_tidy.extractCloudHosts(responseString);
-                        mergeMaps(CouldHashMap, responseData); // 合并响应数据
+                        //获取所有响应头
+                        IResponseInfo analyzeResponse = helpers.analyzeResponse(messageInfo.getResponse());
+                        List<String> headers = analyzeResponse.getHeaders();
+                        //ExtractHeaders判读是否为存储桶
+                        HashMap<String, ArrayList> headersData = Date_tidy.ExtractHeaders(headers,requesthost);
+                        mergeMaps(CouldHashMap, headersData);
+                        //对黑名单格式的响应不进行正则匹配
+                        if (response != null && !unLegalExtensionSet.contains(type)){
+                            responseString = new String(response, "UTF-8");
+                            HashMap<String, ArrayList> responseData = Date_tidy.extractCloudHosts(responseString);
+                            mergeMaps(CouldHashMap, responseData); // 合并响应数据
+                        }
                     } catch (UnsupportedEncodingException e) {
                         throw new RuntimeException(e);
                     }
                 }
 
                 if (!CouldHashMap.isEmpty()){
-                    List<Poc_Scan.RequestResponseWrapper> requestResponseWrappers = Poc_Scan.buildHttpServiceFromUrl(callbacks, helpers, CouldHashMap, messageInfo,modifiedUrl);
-                    for (Poc_Scan.RequestResponseWrapper requestResponseWrapper : requestResponseWrappers) {
-                        IHttpRequestResponse requestResponse = requestResponseWrapper.getRequestResponse();
-                        String message1 = requestResponseWrapper.getMessage();
-                        String hosts = requestResponseWrapper.getHosts();
-                        //因为如果是华为云的话会返回空的requestResponse、message1等，但是id还是会自增，为了防止所以if判断
-                        if (message1 != null && !message1.isEmpty()) {
-                            Udatas.add(new TablesData(Udatas.size() + 1, source_url, hosts, message1, requestResponse));
-                            ((URLTableModel) Utable.getModel()).fireTableDataChanged(); // 通知表格数据已更改，将获取的数据在表格显示
-                        }
-                    }
+                    scanExecutor.submit(() -> {
+                        List<Poc_Scan.RequestResponseWrapper> requestResponseWrappers = Poc_Scan.buildHttpServiceFromUrl(callbacks, helpers, CouldHashMap, messageInfo,modifiedUrl);
+                        SwingUtilities.invokeLater(() -> {
+                            // 更新UI
+                            for (Poc_Scan.RequestResponseWrapper requestResponseWrapper : requestResponseWrappers) {
+                                IHttpRequestResponse requestResponse = requestResponseWrapper.getRequestResponse();
+                                String message1 = requestResponseWrapper.getMessage();
+                                String hosts = requestResponseWrapper.getHosts();
+                                //因为如果是华为云的话会返回空的requestResponse、message1等，但是id还是会自增，为了防止所以if判断
+                                if (message1 != null && !message1.isEmpty()) {
+                                    Udatas.add(new TablesData(Udatas.size() + 1, source_url, hosts, message1, requestResponse));
+                                    ((URLTableModel) Utable.getModel()).fireTableDataChanged(); // 通知表格数据已更改，将获取的数据在表格显示
+                                }
+                            }
+                        });
+                    });
+//                    List<Poc_Scan.RequestResponseWrapper> requestResponseWrappers = Poc_Scan.buildHttpServiceFromUrl(callbacks, helpers, CouldHashMap, messageInfo,modifiedUrl);
+//                    for (Poc_Scan.RequestResponseWrapper requestResponseWrapper : requestResponseWrappers) {
+//                        IHttpRequestResponse requestResponse = requestResponseWrapper.getRequestResponse();
+//                        String message1 = requestResponseWrapper.getMessage();
+//                        String hosts = requestResponseWrapper.getHosts();
+//                        //因为如果是华为云的话会返回空的requestResponse、message1等，但是id还是会自增，为了防止所以if判断
+//                        if (message1 != null && !message1.isEmpty()) {
+//                            Udatas.add(new TablesData(Udatas.size() + 1, source_url, hosts, message1, requestResponse));
+//                            ((URLTableModel) Utable.getModel()).fireTableDataChanged(); // 通知表格数据已更改，将获取的数据在表格显示
+//                        }
+//                    }
                 }
 
             }
@@ -254,6 +294,34 @@ public class BurpExtender extends AbstractTableModel implements IBurpExtender, I
                 fireTableRowsDeleted(row, row); // 通知表格已删除一行
             }
         }
+        //复制所有行的url请请求
+        public void copyUrl(int row) {
+            if (row >= 0 && row < Udatas.size()) {
+                TablesData dataEntry = Udatas.get(row);
+                if (dataEntry != null && dataEntry.requestResponse != null) {
+                    try {
+                        // 获取HTTP服务信息（Host和端口）
+                        IHttpService httpService = dataEntry.requestResponse.getHttpService();
+
+                        // 解析请求URL路径
+                        byte[] request = dataEntry.requestResponse.getRequest();
+                        String requestString = new String(request, "UTF-8");
+                        String[] lines = requestString.split("\r\n");
+                        String[] s1 = lines[0].split(" ");
+                        String path = s1[1];
+                        // 构造完整URL（格式：https://host/path）
+                        String fullUrl = "https://" + httpService.getHost() + path;
+
+                        // 复制到剪贴板
+                        StringSelection selection = new StringSelection(fullUrl);
+                        Clipboard clipboard = Toolkit.getDefaultToolkit().getSystemClipboard();
+                        clipboard.setContents(selection, null);
+                    } catch (Exception e) {
+                        stdout.println("Error copying URL: " + e.getMessage());
+                    }
+                }
+            }
+        }
     }
     @Override
     public IHttpService getHttpService() {
@@ -307,10 +375,18 @@ public class BurpExtender extends AbstractTableModel implements IBurpExtender, I
                     ((URLTableModel) getModel()).removeRow(selectedRow);
                 }
             });
-//            JMenuItem CopyUrl = new JMenuItem("copy url");
+            //复制请求url
+            JMenuItem CopyUrl = new JMenuItem("copy url");
+            CopyUrl.addActionListener(e -> {
+                int selectedRow = getSelectedRow();
+                if (selectedRow != -1){
+                    ((URLTableModel) getModel()).copyUrl(selectedRow);
+                }
+            });
 
             popupMenu.add(clearAll);
             popupMenu.add(deleteRow);
+            popupMenu.add(CopyUrl);
             this.setComponentPopupMenu(popupMenu);
         }
 
