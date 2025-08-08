@@ -21,7 +21,7 @@ public class Poc_Scan {
             "GET / HTTP/1.1",
             "GET /?acl HTTP/1.1",
             "GET /?policy HTTP/1.1",
-            "PUT /123.html HTTP/1.1",
+            "PUT /123.txt HTTP/1.1",
             "PUT /123.png HTTP/1.1"
     );
 
@@ -34,8 +34,18 @@ public class Poc_Scan {
     private static final String CLOUD_HUAWEI = "Cloud_HuaWei";
     private static final String CLOUD_TENCENT = "Cloud_TengXun";
 
-    // 提取路径
-    private static List<String>Paths;
+    // 定义需要处理的扩展名列表
+    private static final String[] TARGET_EXTENSIONS = {".txt", ".js", ".json", ".png", ".jpg", ".pdf", ".zip"};
+    private static final String REGEX = ".*(" + String.join("|", TARGET_EXTENSIONS) + ")$";
+    private static final Pattern TARGET_EXTENSION_PATTERN = Pattern.compile(REGEX, Pattern.CASE_INSENSITIVE);
+    
+    // 用于存储路径的ThreadLocal变量，避免线程安全问题
+    private static final ThreadLocal<List<String>> pathsHolder = new ThreadLocal<List<String>>() {
+        @Override
+        protected List<String> initialValue() {
+            return new ArrayList<>();
+        }
+    };
 
     /**
      * 被动扫描方法，基于代理流量进行漏洞检测
@@ -45,12 +55,66 @@ public class Poc_Scan {
             IExtensionHelpers helpers,
             HashMap<String, ArrayList<String>> couldHashMap,
             IHttpRequestResponse messageInfo,
-            String modifiedUrl) {
-        //测试输出
-        PrintWriter printWriter = new PrintWriter(callbacks.getStdout(), true);
+            String fullUrl) {
 
         List<RequestResponseWrapper> results = new ArrayList<>();
         List<String> currentPocList = new ArrayList<>(BASE_POC_LIST);
+        String modifiedUrl = null;
+        List<String> paths = pathsHolder.get();
+        paths.clear(); // 清空之前的数据
+
+        // 解析完整URL
+        String basePath = "/"; // 默认基础路径
+        boolean isTargetFileUrl = false; // 标记是否为文件URL
+        String hostName = "";
+        int port = 443;
+        boolean useHttps = true;
+        
+        try {
+            if (fullUrl != null && !fullUrl.isEmpty()) {
+                URL urlObj = new URL(fullUrl);
+                basePath = urlObj.getPath();
+                hostName = urlObj.getHost();
+                port = urlObj.getPort();
+                port = (port == -1) ? urlObj.getDefaultPort() : port;
+                useHttps = "https".equalsIgnoreCase(urlObj.getProtocol());
+                
+                // 检查是否为文件URL
+                Matcher matcher = TARGET_EXTENSION_PATTERN.matcher(basePath);
+                isTargetFileUrl = matcher.find(); // 判断路径是否匹配目标扩展名
+
+                if (isTargetFileUrl) {
+                    // 定义poc (存储桶解析漏洞专用)
+                    String newParam = "response-content-type=text/html";
+                    // url.getQuery();判断url中是否存在？
+                    String currentQuery = urlObj.getQuery();
+                    if (currentQuery == null) {
+                        // 无参数时拼接 ?param
+                        modifiedUrl = basePath + "?" + newParam;
+                    } else {
+                        // 已有参数时拼接 &param
+                        modifiedUrl = basePath + "&" + newParam;
+                    }
+                    
+                    // 对于文件URL，提取目录路径用于其他测试
+                    int lastSlashIndex = basePath.lastIndexOf('/');
+                    if (lastSlashIndex > 0) {
+                        // 提取目录路径
+                        String directoryPath = basePath.substring(0, lastSlashIndex + 1);
+                        paths.addAll(extractPaths(directoryPath));
+                    } else {
+                        paths.add("/");
+                    }
+                } else {
+                    //将路径进行全量组合
+                    if (!basePath.equals("/") && !basePath.isEmpty()){
+                        paths.addAll(extractPaths(basePath));
+                    }
+                }
+            }
+        } catch (MalformedURLException e) {
+            // URL解析失败，使用默认值
+        }
 
         // 仅当 modifiedUrl 有效时添加
         if (modifiedUrl != null && !modifiedUrl.trim().isEmpty()) {
@@ -62,27 +126,106 @@ public class Poc_Scan {
             String cloudProvider = entry.getKey();
             ArrayList<String> hosts = entry.getValue();
             for (String host : hosts) {
-                if (!scannedHosts.contains(host)) { // 检查是否已经扫描过该主机名
-                    scannedHosts.add(host); // 将主机名添加到已经扫描过的集合中
-                    String[] hostParts = host.split(":");
-                    String hostName = hostParts[0];
-                    int targetPort = hostParts.length > 1 ? Integer.parseInt(hostParts[1]) : 443;
-                    boolean useHttps = targetPort == 443 || targetPort == 8443;
-                    // 对每个POC进行测试，此处循环poc导致解析漏洞扫描多次
+                String hostIdentifier = host + ":" + cloudProvider; // 使用host和云服务商组合作为唯一标识
+                if (!scannedHosts.contains(hostIdentifier)) { // 检查是否已经扫描过该主机名
+                    scannedHosts.add(hostIdentifier); // 将主机名添加到已经扫描过的集合中
+                    
+                    // 如果hostName为空，从host中提取
+                    if (hostName.isEmpty()) {
+                        String[] hostParts = host.split(":");
+                        hostName = hostParts[0];
+                        port = hostParts.length > 1 ? Integer.parseInt(hostParts[1]) : 443;
+                        useHttps = port == 443 || port == 8443;
+                    }
+                    
+                    boolean bucketUploadFound = false; // 添加标志位，一旦发现可上传就停止后续PUT请求
+                    
+                    // 发送请求并分析响应
                     for (String poc : currentPocList) {
-                        String requestString = buildRequestString(poc, host);
-                        String requestBody = poc.contains("PUT") ? "<div style=\"display:none;\">Hidden Element</div><script>console.log('XSS Test');</script>" : "";
-                        IHttpRequestResponse response = sendHttpRequest(helpers, callbacks, hostName, targetPort, useHttps, requestString, requestBody);
-                        if (response != null && response.getResponse() != null) {
-                            // 分析响应
-                            boolean isHtmlResponse = checkHtmlResponse(helpers, response.getResponse(), modifiedUrl, poc);
-                            String message = analyzeResponse(helpers, response, cloudProvider, poc);
-                            if (isHtmlResponse) {
-                                message = "存储桶解析漏洞";
+                        String[] parts = poc.split(" ", 3);
+                        if (parts.length < 3) continue;
+                        String method = parts[0];
+                        String originalPath = parts[1];
+                        String protocol = parts[2];
+                        
+                        // 如果是PUT请求，且已经发现可上传，则跳过
+                        if (method.equals("PUT") && bucketUploadFound) {
+                            continue;
+                        }
+                        
+                        // 存储桶解析漏洞只针对文件URL进行测试，且只测试modifiedUrl
+                        if (poc.equals("GET " + modifiedUrl + " HTTP/1.1")) {
+                            // 只有文件URL才进行存储桶解析漏洞测试
+                            if (isTargetFileUrl && modifiedUrl != null) {
+                                String requestStr = method + " " + originalPath + " " + protocol;
+                                String requestString = buildRequestString(requestStr, hostName);
+                                String requestBody = "";
+                                IHttpRequestResponse response = sendHttpRequest(helpers, callbacks, hostName, port, useHttps, requestString, requestBody);
+                                String message = null;
+                                if (response != null && response.getResponse() != null) {
+                                    boolean isHtmlResponse = checkHtmlResponse(helpers, response.getResponse(), modifiedUrl, "GET " + modifiedUrl + " HTTP/1.1");
+                                    if (isHtmlResponse) {
+                                        message = "存储桶解析漏洞";
+                                    }
+                                    if (message != null) {
+                                        results.add(new RequestResponseWrapper(response, message, hostName));
+                                    } else {
+                                        results.add(new RequestResponseWrapper(response, "未发现漏洞", hostName));
+                                    }
+                                } else {
+                                    results.add(new RequestResponseWrapper(null, "Destination is unreachable", hostName));
+                                }
                             }
-                            // 记录漏洞
-                            if (message != null && !message.isEmpty()) {
-                                results.add(new RequestResponseWrapper(response, message, host));
+                        } else {
+                            // 其他漏洞测试，对所有路径进行测试
+                            if (!paths.isEmpty()) {
+                                for (String path : paths) {
+                                    // 修复路径拼接问题：如果路径已经是目录格式，去除请求路径开头的斜杠
+                                    String adjustedPath = path;
+                                    if (path.endsWith("/") && originalPath.startsWith("/")) {
+                                        originalPath = originalPath.substring(1);
+                                    }
+                                    String requestStr = method + " " + adjustedPath + originalPath + " " + protocol;
+                                    String requestString = buildRequestString(requestStr, hostName);
+                                    String requestBody = method.equals("PUT") ? "test content" : "";
+                                    IHttpRequestResponse response = sendHttpRequest(helpers, callbacks, hostName, port, useHttps, requestString, requestBody);
+                                    String message = null;
+                                    if (response != null && response.getResponse() != null) {
+                                        message = analyzeResponse(helpers, response, cloudProvider, poc);
+                                        // 如果发现上传漏洞，设置标志位
+                                        if (message != null && message.equals("Bucket文件上传")) {
+                                            bucketUploadFound = true;
+                                        }
+                                        if (message != null) {
+                                            results.add(new RequestResponseWrapper(response, message, hostName));
+                                        } else {
+                                            results.add(new RequestResponseWrapper(response, "未发现漏洞", hostName));
+                                        }
+                                    } else {
+                                        results.add(new RequestResponseWrapper(null, "Destination is unreachable", hostName));
+                                    }
+                                }
+                            } else {
+                                // 没有额外路径的情况
+                                String requestStr = method + " " + originalPath + " " + protocol;
+                                String requestString = buildRequestString(requestStr, hostName);
+                                String requestBody = method.equals("PUT") ? "test content" : "";
+                                IHttpRequestResponse response = sendHttpRequest(helpers, callbacks, hostName, port, useHttps, requestString, requestBody);
+                                String message = null;
+                                if (response != null && response.getResponse() != null) {
+                                    message = analyzeResponse(helpers, response, cloudProvider, poc);
+                                    // 如果发现上传漏洞，设置标志位
+                                    if (message != null && message.equals("Bucket文件上传")) {
+                                        bucketUploadFound = true;
+                                    }
+                                    if (message != null) {
+                                        results.add(new RequestResponseWrapper(response, message, hostName));
+                                    } else {
+                                        results.add(new RequestResponseWrapper(response, "未发现漏洞", hostName));
+                                    }
+                                } else {
+                                    results.add(new RequestResponseWrapper(null, "Destination is unreachable", hostName));
+                                }
                             }
                         }
                     }
@@ -106,26 +249,27 @@ public class Poc_Scan {
         String hostName = host;  // 原始URL
         int port = 443; // 默认HTTPS端口
         boolean useHttps = true; // 默认使用HTTPS
+        List<String> paths = pathsHolder.get();
+        paths.clear(); // 清空之前的数据
+        
         // 构建POC列表
         List<String> currentPocList = new ArrayList<>(BASE_POC_LIST);
+        String basePath = "/"; // 默认基础路径
+        boolean isTargetFileUrl = false; // 标记是否为文件URL
+        
         // 解析URL和构建modifiedUrl
         try {
             URL urlObj = new URL(host);
-            String basePath = urlObj.getPath();
-            //将路径进行全量组合
-            Paths = extractPaths(basePath);
-            // 定义需要处理的扩展名列表
-            String[] targetExtensions = {".txt", ".js", ".json", ".png", ".jpg", ".pdf", ".zip"};
-            String regex = ".*(" + String.join("|", targetExtensions) + ")$";
-            Pattern pattern = Pattern.compile(regex, Pattern.CASE_INSENSITIVE);
-            Matcher matcher = pattern.matcher(basePath);
-            boolean isTargetFile = matcher.find(); // 判断路径是否匹配目标扩展名
+            basePath = urlObj.getPath();
+            // 检查是否为文件URL
+            Matcher matcher = TARGET_EXTENSION_PATTERN.matcher(basePath);
+            isTargetFileUrl = matcher.find(); // 判断路径是否匹配目标扩展名
 
-            // 定义poc
-            String newParam = "response-content-type=text/html";
-            // url.getQuery();判断url中是否存在？
-            String currentQuery = urlObj.getQuery();
-            if (isTargetFile) {
+            if (isTargetFileUrl) {
+                // 定义poc (存储桶解析漏洞专用)
+                String newParam = "response-content-type=text/html";
+                // url.getQuery();判断url中是否存在？
+                String currentQuery = urlObj.getQuery();
                 if (currentQuery == null) {
                     // 无参数时拼接 ?param
                     modifiedUrl = basePath + "?" + newParam;
@@ -133,11 +277,26 @@ public class Poc_Scan {
                     // 已有参数时拼接 &param
                     modifiedUrl = basePath + "&" + newParam;
                 }
+                
+                // 对于文件URL，提取目录路径用于其他测试
+                int lastSlashIndex = basePath.lastIndexOf('/');
+                if (lastSlashIndex > 0) {
+                    // 提取目录路径
+                    String directoryPath = basePath.substring(0, lastSlashIndex + 1);
+                    paths.addAll(extractPaths(directoryPath));
+                } else {
+                    paths.add("/");
+                }
+            } else {
+                //将路径进行全量组合
+                if (!basePath.equals("/") && !basePath.isEmpty()){
+                    paths.addAll(extractPaths(basePath));
+                }
             }
 
             hostName = urlObj.getHost(); // 提取纯主机名
             port = urlObj.getPort();
-            port = (port == -1) ? urlObj.getDefaultPort() : port; // 如果端口号为-1，使用默认端口
+            port = (port == -1) ? urlObj.getDefaultPort() : port; // 如果端口为-1，使用默认端口
             useHttps = "https".equalsIgnoreCase(urlObj.getProtocol());
         } catch (MalformedURLException e) {
             // 处理非URL格式的输入
@@ -161,7 +320,7 @@ public class Poc_Scan {
             }
         }
 
-        //去掉可能存在的路径部分
+        // 去掉可能存在的路径部分
         int pathIndex = hostName.indexOf("/");
         if (pathIndex != -1) {
             hostName = hostName.substring(0, pathIndex);
@@ -171,54 +330,102 @@ public class Poc_Scan {
             currentPocList.add("GET " + modifiedUrl + " HTTP/1.1");
         }
 
+        boolean bucketUploadFound = false; // 添加标志位，一旦发现可上传就停止后续PUT请求
+
+
         String pocs = null;
         // 发送请求并分析响应
         for (String poc : currentPocList) {
-            String[] parts = poc.split(" ");
+            String[] parts = poc.split(" ", 3);
+            if (parts.length < 3) continue;
             String method = parts[0];
             String originalPath = parts[1];
             String protocol = parts[2];
-                    if (modifiedUrl != null && poc.contains(modifiedUrl)) {
-                        pocs = method + " " + originalPath + " " + protocol;
-                        String requestString = buildRequestString(pocs, hostName);
-                        String requestBody = "";
+            
+            // 如果是PUT请求，且已经发现可上传，则跳过
+            if (method.equals("PUT") && bucketUploadFound) {
+                continue;
+            }
+            
+            if (modifiedUrl != null && poc.equals("GET " + modifiedUrl + " HTTP/1.1")) {
+                String requestStr = method + " " + originalPath + " " + protocol;
+                String requestString = buildRequestString(requestStr, hostName);
+                String requestBody = "";
+                IHttpRequestResponse response = sendHttpRequest(helpers, callbacks, hostName, port, useHttps, requestString, requestBody);
+                String message = null;
+                if (response != null && response.getResponse() != null) {
+                    boolean isHtmlResponse = checkHtmlResponse(helpers, response.getResponse(), modifiedUrl, "GET " + modifiedUrl + " HTTP/1.1");
+                    if (isHtmlResponse) {
+                        message = "存储桶解析漏洞";
+                    }
+                    if (message != null) {
+                        results.add(new RequestResponseWrapper(response, message, hostName));
+                    } else {
+                        results.add(new RequestResponseWrapper(response, "未发现漏洞", hostName));
+                    }
+                } else {
+                    results.add(new RequestResponseWrapper(null, "Destination is unreachable", hostName));
+                }
+            } else {
+                // 对于文件URL，只使用提取的目录路径
+                List<String> pathsToTest = isTargetFileUrl ? paths : paths;
+                
+                if (!pathsToTest.isEmpty()) {
+                    for (String path : pathsToTest) {
+                        // 修复路径拼接问题：如果路径已经是目录格式，去除请求路径开头的斜杠
+                        String adjustedPath = path;
+                        if (path.endsWith("/") && originalPath.startsWith("/")) {
+                            originalPath = originalPath.substring(1);
+                        }
+                        String requestStr = method + " " + adjustedPath + originalPath + " " + protocol;
+                        
+                        String requestString = buildRequestString(requestStr, hostName);
+                        String requestBody = method.equals("PUT") ? "test content" : "";
                         IHttpRequestResponse response = sendHttpRequest(helpers, callbacks, hostName, port, useHttps, requestString, requestBody);
                         String message = null;
                         if (response != null && response.getResponse() != null) {
-                            boolean isHtmlResponse = checkHtmlResponse(helpers, response.getResponse(), modifiedUrl, "GET " + modifiedUrl + " HTTP/1.1");
-                            if (isHtmlResponse) {
-                                message = "存储桶解析漏洞";
+                            message = analyzeResponse(helpers, response, null, poc);
+                            // 如果发现上传漏洞，设置标志位
+                            if (message != null && message.equals("Bucket文件上传")) {
+                                bucketUploadFound = true;
                             }
                             if (message != null) {
                                 results.add(new RequestResponseWrapper(response, message, hostName));
+                                // 一旦发现可接管的Bucket，就跳出循环
+                                if (message.equals("Bucket可接管")) {
+                                    return results;
+                                }
                             } else {
                                 results.add(new RequestResponseWrapper(response, "未发现漏洞", hostName));
                             }
                         } else {
                             results.add(new RequestResponseWrapper(null, "Destination is unreachable", hostName));
                         }
-                    }else {
-                        if (Paths != null && !Paths.isEmpty()) {
-                            for (String path : Paths) {
-                                pocs = method + " " + path + originalPath + " " + protocol;
-                                String requestString = buildRequestString(pocs, hostName);
-                                String requestBody = pocs.contains("PUT") ? "<div style=\"display:none;\">Hidden Element</div><script>console.log('XSS Test');</script>" : "";
-                                IHttpRequestResponse response = sendHttpRequest(helpers, callbacks, hostName, port, useHttps, requestString, requestBody);
-                                String message = null;
-                                if (response != null && response.getResponse() != null) {
-                                    message = analyzeResponse(helpers, response, null, poc);
-                                    if (message != null) {
-                                        results.add(new RequestResponseWrapper(response, message, hostName));
-                                    } else {
-                                        results.add(new RequestResponseWrapper(response, "未发现漏洞", hostName));
-                                    }
-                                } else {
-                                    results.add(new RequestResponseWrapper(null, "Destination is unreachable", hostName));
-                                }
-                            }
-                        }
                     }
-    }
+                } else {
+                    // 没有额外路径的情况
+                    String requestStr = method + " " + originalPath + " " + protocol;
+                    String requestString = buildRequestString(requestStr, hostName);
+                    String requestBody = method.equals("PUT") ? "test content" : "";
+                    IHttpRequestResponse response = sendHttpRequest(helpers, callbacks, hostName, port, useHttps, requestString, requestBody);
+                    String message = null;
+                    if (response != null && response.getResponse() != null) {
+                        message = analyzeResponse(helpers, response, null, poc);
+                        // 如果发现上传漏洞，设置标志位
+                        if (message != null && message.equals("Bucket文件上传")) {
+                            bucketUploadFound = true;
+                        }
+                        if (message != null) {
+                            results.add(new RequestResponseWrapper(response, message, hostName));
+                        } else {
+                            results.add(new RequestResponseWrapper(response, "未发现漏洞", hostName));
+                        }
+                    } else {
+                        results.add(new RequestResponseWrapper(null, "Destination is unreachable", hostName));
+                    }
+                }
+            }
+        }
         return results;
     }
 
@@ -280,7 +487,7 @@ public class Poc_Scan {
             List<String> responseHeaders = analyzeResponse.getHeaders();
 
             for (String header : responseHeaders) {
-                if (header.contains("Content-Type: text/html")) {
+                if (header.toLowerCase().contains("content-type: text/html")) {
                     return true;
                 }
             }
@@ -299,7 +506,7 @@ public class Poc_Scan {
 
         try {
             byte[] responseBytes = response.getResponse();
-            String responseString = new String(responseBytes, "UTF-8");
+            String responseString = new String(responseBytes, StandardCharsets.UTF_8);
             IResponseInfo analyzeResponse = helpers.analyzeResponse(responseBytes);
             int statusCode = analyzeResponse.getStatusCode();
 
@@ -308,9 +515,9 @@ public class Poc_Scan {
                     return "Bucket遍历";
                 } else if (responseString.contains("<AccessControlPolicy>")) {
                     return "Bucket ACL可读";
-                } else if (responseString.contains("\"Effect\": \"allow\"")) {
+                } else if (responseString.contains("\"Effect\": \"Allow\"")) { // 修复大小写问题
                     return "Bucket 权限策略为允许";
-                } else if ((poc.contains("PUT") && !responseString.contains("401"))) {
+                } else if ((poc.startsWith("PUT ") && !responseString.contains("401") && !responseString.contains("403"))) { // 修复判断逻辑
                     // 华为云不支持文件上传检测
                     if (cloudProvider == null || !CLOUD_HUAWEI.equals(cloudProvider)) {
                         return "Bucket文件上传";
@@ -322,8 +529,8 @@ public class Poc_Scan {
                     return "Bucket可接管";
                 }
             }
-        } catch (UnsupportedEncodingException e) {
-            // 忽略编码异常
+        } catch (Exception e) {
+            // 忽略异常
         }
         return null;
     }
@@ -339,26 +546,22 @@ public class Poc_Scan {
         if (uri == null){
             return paths;
         }
-        // 判断原始URI是否存在文件结尾
-        boolean endsWithSlash = uri.contains(".");
         // 去除末尾斜杠
         if (uri.endsWith("/")) {
             uri = uri.substring(0, uri.length() - 1);
         }
         // 拆分路径段
         String[] segments = uri.split("/");
-        // 确定遍历的结束索引
-        int endIndex = endsWithSlash ? segments.length - 1 : segments.length;
         // 遍历路径段，构建路径
-        for (int i = 0; i < endIndex; i++) {
+        for (int i = 1; i < segments.length; i++) { // 从1开始，跳过第一个空字符串
             String segment = segments[i];
             if (!segment.isEmpty()) {
                 basePathBuilder.append('/').append(segment);
-                paths.add(basePathBuilder.toString());
+                paths.add(basePathBuilder.toString() + "/");
             }
         }
         //添加根路径
-        paths.add("");
+        paths.add("/");
         // 反转列表，从详细到基础
         Collections.reverse(paths);
 

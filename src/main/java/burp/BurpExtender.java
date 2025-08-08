@@ -153,10 +153,13 @@ public class BurpExtender extends AbstractTableModel implements IBurpExtender, I
                     }
                 }
                 //messageIsRequest为ture时候为请求信息，为false时候为响应信息
+                HashMap<String, ArrayList<String>> requestData = new HashMap<>();
+                HashMap<String, ArrayList<String>> headersData = new HashMap<>();
+                HashMap<String, ArrayList<String>> responseData = new HashMap<>();
+                
                 if (messageIsRequest) {
                     //通过host特征判断是否为云oss
-                    HashMap<String, ArrayList<String>> requestData = Date_tidy.extractCloudHosts(hostName);
-                    mergeMaps(CouldHashMap,requestData); // 合并请求数据
+                    requestData = Date_tidy.extractCloudHosts(hostName);
                 }else{
                     // 处理响应
                     byte[] response = messageInfo.getResponse();
@@ -166,22 +169,27 @@ public class BurpExtender extends AbstractTableModel implements IBurpExtender, I
                         IResponseInfo analyzeResponse = helpers.analyzeResponse(messageInfo.getResponse());
                         List<String> headers = analyzeResponse.getHeaders();
                         //ExtractHeaders判读是否为存储桶
-                        HashMap<String, ArrayList<String>> headersData = Date_tidy.ExtractHeaders(headers,hostName);
-                        mergeMaps(CouldHashMap, headersData);
+                        headersData = Date_tidy.ExtractHeaders(headers,hostName);
                         //对黑名单格式的响应不进行正则匹配
                         if (response != null && !unLegalExtensionSet.contains(type)){
                             responseString = new String(response, "UTF-8");
-                            HashMap<String, ArrayList<String>> responseData = Date_tidy.extractCloudHosts(responseString);
-                            mergeMaps(CouldHashMap, responseData); // 合并响应数据
+                            responseData = Date_tidy.extractCloudHosts(responseString);
                         }
                     } catch (UnsupportedEncodingException e) {
                         throw new RuntimeException(e);
                     }
                 }
+                
+                // 合并所有识别到的OSS地址
+                mergeMaps(CouldHashMap, requestData);
+                mergeMaps(CouldHashMap, headersData);
+                mergeMaps(CouldHashMap, responseData);
 
                 if (!CouldHashMap.isEmpty()){
+                    // 获取完整URL用于扫描
+                    String fullUrl = url.toString();
                     scanExecutor.submit(() -> {
-                        List<Poc_Scan.RequestResponseWrapper> requestResponseWrappers = Poc_Scan.buildHttpServiceFromUrl(callbacks, helpers, CouldHashMap, messageInfo,modifiedUrl);
+                        List<Poc_Scan.RequestResponseWrapper> requestResponseWrappers = Poc_Scan.buildHttpServiceFromUrl(callbacks, helpers, CouldHashMap, messageInfo, fullUrl);
                         SwingUtilities.invokeLater(() -> {
                             // 更新UI
                             for (Poc_Scan.RequestResponseWrapper requestResponseWrapper : requestResponseWrappers) {
